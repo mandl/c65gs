@@ -10,6 +10,9 @@ end cpu_test;
 
 architecture behavior of cpu_test is
 
+  signal pmoda : std_logic_vector(7 downto 0) := "ZZZZZZZZ";
+  signal pmodc : std_logic_vector(7 downto 0) := "ZZZZZZZZ";
+  
   signal pixelclock : std_logic := '0';
   signal cpuclock : std_logic := '0';
   signal ioclock : std_logic := '0';
@@ -33,12 +36,7 @@ architecture behavior of cpu_test is
   signal cache_address : std_logic_vector(8 downto 0);
   signal cache_read_data : std_logic_vector(150 downto 0);
   
-  signal led0 : std_logic;
-  signal led1 : std_logic;
-  signal led2 : std_logic;
-  signal led3 : std_logic;
-  signal led4 : std_logic;
-  signal led5 : std_logic;
+  signal led : std_logic_vector(15 downto 0);
   signal sw : std_logic_vector(15 downto 0) := (others => '0');
   signal btn : std_logic_vector(4 downto 0) := (others => '0');
 
@@ -161,16 +159,23 @@ architecture behavior of cpu_test is
            ----------------------------------------------------------------------
            ps2data : in std_logic;
            ps2clock : in std_logic;        
-           
+
+           ----------------------------------------------------------------------
+           -- PMOD interface for keyboard, joystick, expansion port etc board.
+           ----------------------------------------------------------------------
+           pmod_clock : in std_logic;
+           pmod_start_of_sequence : in std_logic;
+           pmod_data_in : in std_logic_vector(3 downto 0);
+           pmod_data_out : out std_logic_vector(1 downto 0);
+           pmoda : inout std_logic_vector(7 downto 0);
+
+           uart_rx : in std_logic;
+           uart_tx : out std_logic;
+
            ----------------------------------------------------------------------
            -- Debug interfaces on Nexys4 board
            ----------------------------------------------------------------------
-           led0 : out std_logic;
-           led1 : out std_logic;
-           led2 : out std_logic;
-           led3 : out std_logic;
-           led4 : out std_logic;
-           led5 : out std_logic;
+           led : out std_logic_vector(15 downto 0);
            sw : in std_logic_vector(15 downto 0);
            btn : in std_logic_vector(4 downto 0);
 
@@ -239,12 +244,20 @@ begin
       
       ps2data => '1',
       ps2clock => '1',
+               
+      pmod_clock => '0',
+      pmod_start_of_sequence => '1',
+      pmod_data_in => "0000",
+      pmoda => pmoda,
+
+      uart_rx => pmodc(1),
+      uart_tx => pmodc(2),
 
       miso_i => '1',
 
       qspidb => qspidb,
       qspicsn => qspicsn,      
-      qspisck => qspisck,     
+      qspisck => qspisck,
       aclsck => aclsck,
       aclMISO => '1',
       aclInt1 => '0',
@@ -276,16 +289,11 @@ begin
       vgagreen        => vgagreen,
       vgablue         => vgablue,
       
-      led0            => led0,
-      led1            => led1,
-      led2            => led2,
-      led3            => led3,
-      led4            => led4,
-      led5            => led5,
-      
+      led             => led,
       sw              => sw,
       btn             => btn,
 
+      -- UART monitor interface
       uart_txd        => uart_txd,
       rsrx            => rsrx,
 

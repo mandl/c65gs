@@ -16,6 +16,9 @@ entity iomapper is
         reset_out : out std_logic;
         irq : out std_logic;
         nmi : out std_logic;
+        capslock_state : inout std_logic;
+        speed_gate : out std_logic;
+        speed_gate_enable : in std_logic;
         hyper_trap : out std_logic;
         restore_nmi : out std_logic;
         cpu_hypervisor_mode : in std_logic;
@@ -33,12 +36,22 @@ entity iomapper is
         
         reg_isr_out : out unsigned(7 downto 0);
         imask_ta_out : out std_logic;
-        
-        led : out std_logic := '0';
+
+        drive_led : out std_logic := '0';
         motor : out std_logic := '0';
+        drive_led_out : in std_logic;
 
         ps2data : in std_logic;
         ps2clock : in std_logic;
+
+        pmod_clock : in std_logic;
+        pmod_start_of_sequence : in std_logic;
+        pmod_data_in : in std_logic_vector(3 downto 0);
+        pmod_data_out : out std_logic_vector(1 downto 0);
+        pmoda : inout std_logic_vector(7 downto 0);
+
+        uart_rx : in std_logic;
+        uart_tx : out std_logic;
 
         pixel_stream_in : in unsigned (7 downto 0);
         pixel_y : in unsigned (11 downto 0);
@@ -207,7 +220,7 @@ architecture behavioral of iomapper is
       sectorbuffermapped2 : out std_logic;
       sectorbuffercs : in std_logic;
       
-      led : out std_logic := '0';
+      drive_led : out std_logic := '0';
       motor : out std_logic := '0';
 
       -------------------------------------------------------------------------
@@ -265,6 +278,33 @@ architecture behavioral of iomapper is
 
       );
   end component;
+
+  component c65uart is
+    port (
+      pixelclock : in std_logic;
+      cpuclock : in std_logic;
+      phi0 : in std_logic;
+      reset : in std_logic;
+      irq : out std_logic := '1';
+
+      uart_rx : in std_logic;
+      uart_tx : out std_logic;
+      
+      porte_out : out std_logic_vector(1 downto 0);
+      porte_in : in std_logic_vector(1 downto 0);
+      portf : inout std_logic_vector(7 downto 0);
+      portg : in std_logic_vector(7 downto 0);
+
+      ---------------------------------------------------------------------------
+      -- fast IO port (clocked at core clock). 1MB address space
+      ---------------------------------------------------------------------------
+      fastio_address : in unsigned(19 downto 0);
+      fastio_write : in std_logic;
+      fastio_read : in std_logic;
+      fastio_wdata : in unsigned(7 downto 0);
+      fastio_rdata : out unsigned(7 downto 0)
+      );
+  end component;
   
   component cia6526 is
     port (
@@ -306,21 +346,41 @@ architecture behavioral of iomapper is
   port (
     pixelclk : in std_logic;
 
+    cpu_hypervisor_mode : in std_logic;
+    drive_led_out : in std_logic;
+
     last_scan_code : out std_logic_vector(12 downto 0);
 
     nmi : out std_logic := 'Z';
     reset : out std_logic := 'Z';
-    hyper_trap : out std_logic := 'Z';
+    hyper_trap : out std_logic := '1';
+    hyper_trap_count : out unsigned(7 downto 0) := x"00";
     
     -- PS2 keyboard interface
     ps2clock  : in  std_logic;
     ps2data   : in  std_logic;
+
+    speed_gate : out std_logic;
+    speed_gate_enable : in std_logic;
+    
+    capslock_out : out std_logic;    
+    keyboard_column8_select_in : in std_logic;
+    pmod_clock : in std_logic;
+    pmod_start_of_sequence : in std_logic;
+    pmod_data_in : in std_logic_vector(3 downto 0);
+    pmod_data_out : out std_logic_vector(1 downto 0);
+    
     -- CIA ports
     porta_in  : in  std_logic_vector(7 downto 0);
     portb_in  : in  std_logic_vector(7 downto 0);
     porta_out : out std_logic_vector(7 downto 0);
     portb_out : out std_logic_vector(7 downto 0);
 
+    pota_x : out unsigned(7 downto 0);
+    pota_y : out unsigned(7 downto 0);
+    potb_x : out unsigned(7 downto 0);    
+    potb_y : out unsigned(7 downto 0);
+    
     ---------------------------------------------------------------------------
     -- keyboard event capture via ethernet
     ---------------------------------------------------------------------------    
@@ -375,10 +435,17 @@ architecture behavioral of iomapper is
     doutb : OUT STD_LOGIC_VECTOR(63 DOWNTO 0)
     );
   end component;
+
+  signal pota_x : unsigned(7 downto 0);
+  signal pota_y : unsigned(7 downto 0);
+  signal potb_x : unsigned(7 downto 0);
+  signal potb_y : unsigned(7 downto 0);
   
   signal kickstartcs : std_logic;
 
   signal reset_high : std_logic;
+
+  signal hyper_trap_count : unsigned(7 downto 0) := x"00";
   
   signal clock50hz : std_logic := '1';
   constant divisor50hz : integer := 640000; -- 64MHz/50Hz/2;
@@ -415,6 +482,9 @@ architecture behavioral of iomapper is
 
   signal eth_keycode_toggle : std_logic;
   signal eth_keycode : unsigned(15 downto 0);
+
+  signal keyboard_column8_select : std_logic;
+  signal dummy_bits : std_logic_vector(1 downto 0);
   
 begin
 
@@ -502,12 +572,41 @@ begin
     );
   end block;
 
+  block4b: block
+  begin
+    c65uart0: c65uart port map (
+      pixelclock => pixelclk,
+      cpuclock => clk,
+      phi0 => phi0,
+      reset => reset,
+--      irq => nmi,
+      fastio_address => unsigned(address(19 downto 0)),
+      fastio_write => w,
+      fastio_read => r,
+      std_logic_vector(fastio_rdata) => data_o,
+      fastio_wdata => unsigned(data_i),
+      -- Port E is used for extra keys on C65 keyboard:
+      -- bit0 = caps lock (input only)
+      -- bit1 = column 8 select (output only)      
+      porte_in(1) => keyboard_column8_select,
+      porte_in(0) => capslock_state,
+      porte_out => dummy_bits,
+      uart_rx => uart_rx,
+      uart_tx => uart_tx,
+      portf => pmoda,
+      portg => std_logic_vector(hyper_trap_count)
+      );
+  end block;
+  
   block5: block
   begin
   keymapper0 : keymapper port map (
     pixelclk       => clk,
+    cpu_hypervisor_mode => cpu_hypervisor_mode,
+    drive_led_out => drive_led_out,
     nmi => restore_nmi,
     hyper_trap => hyper_trap,
+    hyper_trap_count => hyper_trap_count,
     reset => reset_out,
     ps2clock       => ps2clock,
     ps2data        => ps2data,
@@ -518,6 +617,21 @@ begin
     porta_out      => cia1porta_in,
     portb_out      => cia1portb_in,
 
+    pota_x => pota_x,
+    pota_y => pota_y,
+    potb_x => potb_x,
+    potb_y => potb_y,
+    
+    speed_gate => speed_gate,
+    speed_gate_enable => speed_gate_enable,
+
+    capslock_out => capslock_state,
+    keyboard_column8_select_in => keyboard_column8_select,
+    pmod_clock => pmod_clock,
+    pmod_start_of_sequence => pmod_start_of_sequence,
+    pmod_data_in => pmod_data_in,
+    pmod_data_out => pmod_data_out,
+    
     -- remote keyboard input via ethernet
 --    eth_keycode_toggle => eth_keycode_toggle,
 --    eth_keycode => eth_keycode
@@ -539,8 +653,8 @@ begin
     addr => unsigned(address(4 downto 0)),
     di => unsigned(data_i),
     std_logic_vector(do) => data_o,
-    pot_x => x"01",
-    pot_y => x"02",
+    pot_x => pota_x,
+    pot_y => pota_y,
     audio_data => leftsid_audio);
   end block;
 
@@ -555,8 +669,8 @@ begin
     addr => unsigned(address(4 downto 0)),
     di => unsigned(data_i),
     std_logic_vector(do) => data_o,
-    pot_x => x"03",
-    pot_y => x"04",
+    pot_x => potb_x,
+    pot_y => potb_y,
     audio_data => rightsid_audio);
   end block;
 
@@ -611,9 +725,9 @@ begin
     sectorbuffermapped2 => sector_buffer_mapped_read,
     sectorbuffercs => sectorbuffercs,
 
-    led => led,
+    drive_led => drive_led,
     motor => motor,
-    
+
     sw => sw,
     btn => btn,
     cs_bo => cs_bo,
@@ -750,8 +864,8 @@ begin
 
       -- $D500 - $D5FF is not currently used.  Probably use some for FPU.
       
-      -- $D600 - $D60F is reserved for 6551 serial UART emulation for C65
-      -- compatibility (6551 actually only has 4 registers).
+      -- $D600 - $D60F is reserved for C65 serial UART emulation for C65
+      -- compatibility (C65 UART actually only has 7 registers).
       -- 6551 is not currently implemented, so this is just unmapped for now,
       -- except for any read values required to allow the C65 ROM to function.
 

@@ -9,20 +9,23 @@ KICKSTARTSRCS=kickstart.a65 \
 		kickstart_task.a65 \
 		kickstart_mem.a65
 
-UNAME := $(@shell uname)
-ifeq ($(UNAME),MINGW32_NT-6.1)
+# Unlikely anyone uses Windows 9x anymore
+ifeq ($(OS),Windows_NT)
 SOCKLIBS = -l ws2_32
 else
 SOCKLIBS =
 endif
 
+fpga:	kickstart.vhdl \
+	charrom.vhdl
+
 all:	ghdl-frame-gen \
+	diskmenu.prg \
+	kickstart65gs.bin \
 	makerom \
 	container.prj \
 	thumbnail.prg \
 	tests/textmodetest.prg \
-	gs4510.vhdl viciv.vhdl \
-	kickstart65gs.bin \
 	etherload etherkick
 
 ethertest.prg:	ethertest.a65 Makefile
@@ -31,14 +34,21 @@ ethertest.prg:	ethertest.a65 Makefile
 f011test.prg:	f011test.a65 Makefile
 	../Ophis/bin/ophis -4 f011test.a65
 
+diskmenu.prg:	diskmenuprg.a65 diskmenu.a65 Makefile
+	../Ophis/bin/ophis -4 diskmenuprg.a65 -l diskmenuprg.list
+
 diskchooser:	diskchooser.a65 etherload.prg Makefile
 	../Ophis/bin/ophis -4 diskchooser.a65 -l diskchooser.list
 
 version.a65:	*.vhdl *.a65 *.vhd Makefile
 	./version.sh
 
+# diskmenu_c000.bin yet b0rken
 kickstart65gs.bin:	$(KICKSTARTSRCS) Makefile diskchooser version.a65
 	../Ophis/bin/ophis -4 kickstart.a65 -l kickstart.list
+
+diskmenu_c000.bin:	diskmenuc000.a65 diskmenu.a65 etherload.prg
+	../Ophis/bin/ophis -4 diskmenuc000.a65 -l diskmenuc000.list
 
 thumbnail.prg:	showthumbnail.a65 Makefile
 	../Ophis/bin/ophis -4 showthumbnail.a65
@@ -69,10 +79,10 @@ etherload:	etherload.c
 	gcc -Wall -g -o etherload etherload.c $(SOCKLIBS)
 
 etherkick:	etherkick.c
-	gcc -Wall -g -o etherkick etherkick.c
+	gcc -Wall -g -o etherkick etherkick.c $(SOCKLIBS)
 
 iomap.txt:	*.vhdl Makefile
-	egrep "IO:C6|IO:GS" *.vhdl | cut -f3- -d: | sort -k2 > iomap.txt
+	egrep "IO:C6|IO:GS" *.vhdl | cut -f3- -d: | sort -u -k2 > iomap.txt
 
 transfer:	kickstart.vhdl version.vhdl kickstart65gs.bin makerom makeslowram iomap.txt ipcore_dir
 	scp -pr ipcore_dir version.sh Makefile makerom c65gs.rom makerom makeslowram *.a65 *.ucf *.xise *.prj *vhd *vhdl kickstart65gs.bin 192.168.56.101:c64accel/
@@ -81,7 +91,7 @@ transfer:	kickstart.vhdl version.vhdl kickstart65gs.bin makerom makeslowram ioma
 version.vhdl: version-template.vhdl version.sh .git/index *.vhdl *.vhd 
 	./version.sh
 
-SIMULATIONFILES=	viciv.vhdl bitplanes.vhdl cputypes.vhdl sid_voice.vhd sid_coeffs.vhd sid_filters.vhd sid_components.vhd version.vhdl kickstart.vhdl iomapper.vhdl container.vhd cpu_test.vhdl gs4510.vhdl UART_TX_CTRL.vhd uart_rx.vhdl uart_monitor.vhdl machine.vhdl cia6526.vhdl keymapper.vhdl ghdl_ram8x32k.vhdl charrom.vhdl ghdl_chipram8bit.vhdl ghdl_screen_ram_buffer.vhdl ghdl_ram9x4k.vhdl ghdl_ram18x2k.vhdl sdcardio.vhdl ghdl_ram8x512.vhdl ethernet.vhdl ramlatch64.vhdl shadowram.vhdl microcode.vhdl cputypes.vhdl version.vhdl sid_6581.vhd ghdl_ram128x1k.vhdl ghdl_ram8x4096.vhdl crc.vhdl slowram.vhdl framepacker.vhdl ghdl_videobuffer.vhdl vicii_sprites.vhdl sprite.vhdl ghdl_alpha_blend.vhdl ghdl_farstack.vhdl debugtools.vhdl
+SIMULATIONFILES=	viciv.vhdl bitplanes.vhdl bitplane.vhdl cputypes.vhdl sid_voice.vhd sid_coeffs.vhd sid_filters.vhd sid_components.vhd version.vhdl kickstart.vhdl iomapper.vhdl container.vhd cpu_test.vhdl gs4510.vhdl UART_TX_CTRL.vhd uart_rx.vhdl uart_monitor.vhdl machine.vhdl cia6526.vhdl c65uart.vhdl keymapper.vhdl ghdl_ram8x32k.vhdl charrom.vhdl ghdl_chipram8bit.vhdl ghdl_screen_ram_buffer.vhdl ghdl_ram9x4k.vhdl ghdl_ram18x2k.vhdl sdcardio.vhdl ghdl_ram8x512.vhdl ethernet.vhdl ramlatch64.vhdl shadowram.vhdl cputypes.vhdl version.vhdl sid_6581.vhd ghdl_ram128x1k.vhdl ghdl_ram8x4096.vhdl crc.vhdl slowram.vhdl framepacker.vhdl ghdl_videobuffer.vhdl vicii_sprites.vhdl sprite.vhdl ghdl_alpha_blend.vhdl ghdl_farstack.vhdl debugtools.vhdl
 simulate:	$(SIMULATIONFILES)
 	ghdl -i $(SIMULATIONFILES) 
 	ghdl -m cpu_test
@@ -138,10 +148,20 @@ c65-911001-dos-context.bin:	911001.bin Makefile
 	dd if=911001.bin bs=8192 skip=15 count=1 >> c65-911001-dos-context.bin
 
 pngprepare:	pngprepare.c Makefile
-	gcc -g -Wall -o pngprepare pngprepare.c -lpng
+	gcc -g -Wall -I/usr/local/include -L/usr/local/lib -o pngprepare pngprepare.c -lpng
 
 charrom.vhdl:	pngprepare 8x8font.png
 	./pngprepare charrom 8x8font.png charrom.vhdl
 
 BOOTLOGO.G65:	pngprepare mega65_64x64.png
 	./pngprepare logo mega65_64x64.png BOOTLOGO.G65
+
+clean:
+	rm -f *.gise *.bgn *.bld *.cmd_log *.drc *.lso *.ncd *.ngc *.ngd *.ngr *.pad *.par *.pcf *.ptwx *.stx *.syr *.twr *.twx *.unroutes *.ut *.xpi *.xst *.xwbt
+	rm -f *.map *.mrp *.psr *.xrpt *.csv *.list *.log *.xml
+	rm -f container_summary.* container_usage.* usage_statistics_webtalk.* par_usage_statistics.*
+	rm -f ipcore_dir/*.asy ipcore_dir/*.gise ipcore_dir/*.ncf ipcore_dir/*.sym ipcore_dir/*.xdc
+	rm -f ipcore_dir/*.cgp ipcore_dir/*.txt ipcore_dir/*.log
+
+cleangen:
+	rm kickstart.vhdl charrom.vhdl kickstart65gs.bin

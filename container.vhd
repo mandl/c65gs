@@ -98,6 +98,19 @@ entity container is
          ps2data : in std_logic;
 
          ----------------------------------------------------------------------
+         -- PMOD B for input PCB
+         ----------------------------------------------------------------------
+         jblo : inout std_logic_vector(4 downto 1) := (others => 'Z');
+         jbhi : inout std_logic_vector(10 downto 7) := (others => 'Z');
+         
+         ----------------------------------------------------------------------
+         -- PMOD A for general IO while debugging and testing
+         ----------------------------------------------------------------------
+         jalo : inout std_logic_vector(4 downto 1) := (others => 'Z');
+         jahi : inout std_logic_vector(10 downto 7) := (others => 'Z');
+         jclo : inout std_logic_vector(4 downto 1) := (others => 'Z');
+         
+         ----------------------------------------------------------------------
          -- Flash RAM for holding config
          ----------------------------------------------------------------------
 --         QspiSCK : out std_logic;
@@ -136,12 +149,7 @@ entity container is
          ----------------------------------------------------------------------
          -- Debug interfaces on Nexys4 board
          ----------------------------------------------------------------------
-         led0 : out std_logic;
-         led1 : out std_logic;
-         led2 : out std_logic;
-         led3 : out std_logic;
-         led4 : out std_logic;
-         led5 : out std_logic;
+         led : out std_logic_vector(15 downto 0);
          sw : in std_logic_vector(15 downto 0);
          btn : in std_logic_vector(4 downto 0);
 
@@ -168,11 +176,11 @@ architecture Behavioral of container is
       );
   end component;
 
-  component FPGAMonitor is
-    Generic (CLOCKFREQ : natural := 100); -- input CLK frequency in MHz
-    Port ( CLK_I : in  STD_LOGIC;
-           RST_I : in  STD_LOGIC;
-           TEMP_O : out  STD_LOGIC_VECTOR (11 downto 0));
+  component fpgatemp is
+    Generic ( DELAY_CYCLES : natural := 480 ); -- 10us @ 48 Mhz
+    Port ( clk : in  STD_LOGIC;
+           rst : in  STD_LOGIC;
+           temp : out  STD_LOGIC_VECTOR (11 downto 0));
   end component;
 
   component ddrwrapper is
@@ -319,14 +327,20 @@ architecture Behavioral of container is
          ps2clock : in std_logic;         
 
          ----------------------------------------------------------------------
+         -- PMOD interface for keyboard, joystick, expansion port etc board.
+         ----------------------------------------------------------------------
+         pmod_clock : in std_logic;
+         pmod_start_of_sequence : in std_logic;
+         pmod_data_in : in std_logic_vector(3 downto 0);
+         pmod_data_out : out std_logic_vector(1 downto 0);
+         pmoda : inout std_logic_vector(7 downto 0);
+         uart_rx : in std_logic;
+         uart_tx : out std_logic;
+
+         ----------------------------------------------------------------------
          -- Debug interfaces on Nexys4 board
          ----------------------------------------------------------------------
-         led0 : out std_logic;
-         led1 : out std_logic;
-         led2 : out std_logic;
-         led3 : out std_logic;
-         led4 : out std_logic;
-         led5 : out std_logic;
+         led : out std_logic_vector(15 downto 0);
          sw : in std_logic_vector(15 downto 0);
          btn : in std_logic_vector(4 downto 0);
 
@@ -385,12 +399,12 @@ begin
 --               clk_out3 => ioclock -- also 48MHz
                );
 
-  fpgamonitor0: FPGAMonitor
-    generic map (      clockfreq => 48)
+  fpgatemp0: fpgatemp
+    generic map (DELAY_CYCLES => 480)
     port map (
-      rst_i => '0',
-      clk_i => cpuclock,
-      temp_o => fpga_temperature);
+      rst => '0',
+      clk => cpuclock,
+      temp => fpga_temperature);
   
   ddrwrapper0: ddrwrapper
     port map (
@@ -497,6 +511,17 @@ begin
       ps2data =>      ps2data,
       ps2clock =>     ps2clk,
 
+      pmod_clock => jblo(1),
+      pmod_start_of_sequence => jblo(2),
+      pmod_data_in(1 downto 0) => jblo(4 downto 3),
+      pmod_data_in(3 downto 2) => jbhi(8 downto 7),
+      pmod_data_out => jbhi(10 downto 9),
+      pmoda(3 downto 0) => jalo(4 downto 1),
+      pmoda(7 downto 4) => jahi(10 downto 7),
+
+      uart_rx => jclo(1),
+      uart_tx => jclo(2),
+      
       slowram_we => slowram_we,
       slowram_request_toggle => slowram_request_toggle,
       slowram_done_toggle => slowram_done_toggle,
@@ -513,12 +538,7 @@ begin
 
       fpga_temperature => fpga_temperature,
       
-      led0 => led0,
-      led1 => led1,
-      led2 => led2,
-      led3 => led3,
-      led4 => led4,
-      led5 => led5,
+      led => led,
       sw => sw,
       btn => btn,
 

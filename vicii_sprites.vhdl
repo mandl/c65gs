@@ -50,11 +50,27 @@ entity vicii_sprites is
     pixelclock : in  STD_LOGIC;
     ioclock : in std_logic;
 
+    signal bitplane_h640 : in std_logic;
+    signal bitplane_h1280 : in std_logic;
+    signal bitplanes_x_start : in unsigned(7 downto 0);
+    signal bitplanes_y_start : in unsigned(7 downto 0);
+    signal bitplane_mode_in : in std_logic;
+    signal bitplane_enables_in : in std_logic_vector(7 downto 0);
+    signal bitplane_complements_in : in std_logic_vector(7 downto 0);
+    signal bitplane_sixteen_colour_mode_flags_in : in std_logic_vector(7 downto 0);
+
     -- Pull sprite data in along the chain from the previous sprite (or VIC-IV)
     signal sprite_datavalid_in : in std_logic;
-    signal sprite_bytenumber_in : in integer range 0 to 2;
+    signal sprite_bytenumber_in : in integer range 0 to 7;
     signal sprite_spritenumber_in : in integer range 0 to 7;
     signal sprite_data_in : in unsigned(7 downto 0);
+
+    -- Extended sprite size control registers
+    signal sprite_horizontal_tile_enables : in std_logic_vector(7 downto 0);
+    signal sprite_bitplane_enables : in std_logic_vector(7 downto 0);
+    signal sprite_extended_height_enables : in std_logic_vector(7 downto 0);
+    signal sprite_extended_height_size : in unsigned(7 downto 0);
+    signal sprite_extended_width_enables : in std_logic_vector(7 downto 0);
 
     -- which base offset for the VIC-II sprite data are we showing this raster line?
     -- VIC-IV clocks sprite_number_for_data and each sprite replaces
@@ -68,6 +84,9 @@ entity vicii_sprites is
     signal is_background_in : in std_logic;
     -- and what is the colour of the bitmap pixel?
     signal x_in : in integer range 0 to 4095;
+    signal x640_in : in integer range 0 to 4095;
+    signal x1280_in : in integer range 0 to 4095;
+
     signal y_in : in integer range 0 to 4095;
     signal border_in : in std_logic;
     signal pixel_in : in unsigned(7 downto 0);
@@ -83,6 +102,8 @@ entity vicii_sprites is
     signal alpha_out : out unsigned(7 downto 0);
     signal sprite_colour_out : out unsigned(7 downto 0);
     signal is_sprite_out : out std_logic;
+    signal sprite_fg_map_final : out std_logic_vector(7 downto 0);
+    signal sprite_map_final : out std_logic_vector(7 downto 0);
 
     -- We need the registers that describe the various sprites.
     -- We could pull these in from the VIC-IV, but that would mean that they
@@ -105,27 +126,33 @@ architecture behavioural of vicii_sprites is
       ----------------------------------------------------------------------
       pixelclock : in  STD_LOGIC;
 
-      signal sprite_number : in integer range 0 to 7;
+      signal sprite_number : in integer range 0 to 15;
       
       -- Pull sprite data in along the chain from the previous sprite (or VIC-IV)
       signal sprite_datavalid_in : in std_logic;
-      signal sprite_bytenumber_in : in integer range 0 to 2;
-      signal sprite_spritenumber_in : in integer range 0 to 7;
+      signal sprite_bytenumber_in : in integer range 0 to 79;
+      signal sprite_spritenumber_in : in integer range 0 to 15;
       signal sprite_data_in : in unsigned(7 downto 0);
 
+      signal sprite_horizontal_tile_enable : in std_logic;
+      signal sprite_bitplane_enable : in std_logic;
+      signal sprite_extended_height_enable : in std_logic;
+      signal sprite_extended_width_enable : in std_logic;
+      signal sprite_extended_height_size : in unsigned(7 downto 0);
+      
       -- Pass sprite data out along the chain to the next sprite
       signal sprite_datavalid_out : out std_logic;
-      signal sprite_bytenumber_out : out integer range 0 to 2;
-      signal sprite_spritenumber_out : out integer range 0 to 7;
+      signal sprite_bytenumber_out : out integer range 0 to 79;
+      signal sprite_spritenumber_out : out integer range 0 to 15;
       signal sprite_data_out : out unsigned(7 downto 0);
 
       -- which base offset for the VIC-II sprite data are we showing this raster line?
       -- VIC-IV clocks sprite_number_for_data and each sprite replaces
       -- sprite_data_offset with the appropriate value if the sprite number is itself
-      signal sprite_number_for_data_in : in integer range 0 to 7;
-      signal sprite_data_offset_in : in integer range 0 to 1023;    
-      signal sprite_data_offset_out : out integer range 0 to 1023;    
-      signal sprite_number_for_data_out : out integer range 0 to 7;
+      signal sprite_number_for_data_in : in integer range 0 to 15;
+      signal sprite_data_offset_in : in integer range 0 to 65535;    
+      signal sprite_data_offset_out : out integer range 0 to 65535;    
+      signal sprite_number_for_data_out : out integer range 0 to 15;
       
       -- Is the pixel just passed in a foreground pixel?
       signal is_foreground_in : in std_logic;
@@ -139,6 +166,8 @@ architecture behavioural of vicii_sprites is
       -- and information from the previous sprite
       signal is_sprite_in : in std_logic;
       signal sprite_colour_in : in unsigned(7 downto 0);
+      signal sprite_map_in : in std_logic_vector(7 downto 0);
+      signal sprite_fg_map_in : in std_logic_vector(7 downto 0);
       
       -- Pass pixel information back out, as well as the sprite colour information
       signal is_foreground_out : out std_logic;
@@ -150,6 +179,8 @@ architecture behavioural of vicii_sprites is
       signal alpha_out : out unsigned(7 downto 0);
       signal sprite_colour_out : out unsigned(7 downto 0);
       signal is_sprite_out : out std_logic;
+      signal sprite_map_out : out std_logic_vector(7 downto 0);
+      signal sprite_fg_map_out : out std_logic_vector(7 downto 0);
 
       signal sprite_enable : in std_logic;
       signal sprite_x : in unsigned(8 downto 0);
@@ -164,6 +195,83 @@ architecture behavioural of vicii_sprites is
       
       );
   end component;
+
+  component bitplanes is
+    Port (
+      ----------------------------------------------------------------------
+      -- dot clock
+      ----------------------------------------------------------------------
+      pixelclock : in  STD_LOGIC;
+      ioclock : in std_logic;
+
+      signal fastio_address : in unsigned(19 downto 0);
+      signal fastio_write : in std_logic;
+      signal fastio_wdata : in unsigned(7 downto 0);
+      
+      -- Pull sprite data in along the chain from the previous sprite (or VIC-IV)
+      signal sprite_datavalid_in : in std_logic;
+      signal sprite_bytenumber_in : in integer range 0 to 79;
+      signal sprite_spritenumber_in : in integer range 0 to 15;
+      signal sprite_data_in : in unsigned(7 downto 0);
+
+      -- XXX Bitplane registers
+      signal bitplane_h640 : in std_logic;
+      signal bitplane_h1280 : in std_logic;
+      signal bitplane_mode_in : in std_logic;
+      signal bitplane_enables_in : in std_logic_vector(7 downto 0);
+      signal bitplane_complements_in : in std_logic_vector(7 downto 0);
+      signal bitplanes_x_start : in unsigned(7 downto 0);
+      signal bitplanes_y_start : in unsigned(7 downto 0);
+      signal bitplane_sixteen_colour_mode_flags : in std_logic_vector(7 downto 0);
+
+      
+      -- Pass sprite data out along the chain to the next sprite
+      signal sprite_datavalid_out : out std_logic;
+      signal sprite_bytenumber_out : out integer range 0 to 79;
+      signal sprite_spritenumber_out : out integer range 0 to 15;
+      signal sprite_data_out : out unsigned(7 downto 0);
+
+      -- which base offset for the VIC-II sprite data are we showing this raster line?
+      -- VIC-IV clocks sprite_number_for_data and each sprite replaces
+      -- sprite_data_offset with the appropriate value if the sprite number is itself
+      signal sprite_number_for_data_in : in integer range 0 to 15;
+      signal sprite_data_offset_in : in integer range 0 to 65535;    
+      signal sprite_data_offset_out : out integer range 0 to 65535;    
+      signal sprite_number_for_data_out : out integer range 0 to 15;
+      
+      -- Is the pixel just passed in a foreground pixel?
+      signal is_foreground_in : in std_logic;
+      signal is_background_in : in std_logic;
+      -- and what is the colour of the bitmap pixel?
+      signal x_in : in integer range 0 to 4095;
+      signal x640_in : in integer range 0 to 4095;
+      signal x1280_in : in integer range 0 to 4095;
+      signal y_in : in integer range 0 to 4095;
+      signal border_in : in std_logic;
+      signal pixel_in : in unsigned(7 downto 0);
+      signal alpha_in : in unsigned(7 downto 0);
+      -- and information from the previous sprite
+      signal is_sprite_in : in std_logic;
+      signal sprite_colour_in : in unsigned(7 downto 0);
+      signal sprite_map_in : in std_logic_vector(7 downto 0);
+      signal sprite_fg_map_in : in std_logic_vector(7 downto 0);
+      
+      -- Pass pixel information back out, as well as the sprite colour information
+      signal is_foreground_out : out std_logic;
+      signal is_background_out : out std_logic;
+      signal x_out : out integer range 0 to 4095;
+      signal y_out : out integer range 0 to 4095;
+      signal border_out : out std_logic;
+      signal pixel_out : out unsigned(7 downto 0);
+      signal alpha_out : out unsigned(7 downto 0);
+      signal sprite_colour_out : out unsigned(7 downto 0);
+      signal is_sprite_out : out std_logic;
+      signal sprite_map_out : out std_logic_vector(7 downto 0);
+      signal sprite_fg_map_out : out std_logic_vector(7 downto 0)
+      
+      );
+  end component;
+
   
   signal viciii_iomode : std_logic_vector(1 downto 0) := "11";
   signal reg_key : unsigned(7 downto 0) := x"00";
@@ -186,55 +294,79 @@ architecture behavioural of vicii_sprites is
 
   -- Pass sprite data out along the chain and out the end 
   signal sprite_datavalid_out : std_logic;
-  signal sprite_bytenumber_out : integer range 0 to 2;
-  signal sprite_spritenumber_out : integer range 0 to 7;
+  signal sprite_bytenumber_out : integer range 0 to 79;
+  signal sprite_spritenumber_out : integer range 0 to 15;
   signal sprite_data_out : unsigned(7 downto 0);
 
   -- And between the sprites
   signal sprite_datavalid_7_6 : std_logic;
-  signal sprite_bytenumber_7_6 : integer range 0 to 2;
-  signal sprite_spritenumber_7_6 : integer range 0 to 7;
+  signal sprite_bytenumber_7_6 : integer range 0 to 79;
+  signal sprite_spritenumber_7_6 : integer range 0 to 15;
   signal sprite_data_7_6 : unsigned(7 downto 0);
   signal sprite_datavalid_6_5 : std_logic;
-  signal sprite_bytenumber_6_5 : integer range 0 to 2;
-  signal sprite_spritenumber_6_5 : integer range 0 to 7;
+  signal sprite_bytenumber_6_5 : integer range 0 to 79;
+  signal sprite_spritenumber_6_5 : integer range 0 to 15;
   signal sprite_data_6_5 : unsigned(7 downto 0);
   signal sprite_datavalid_5_4 : std_logic;
-  signal sprite_bytenumber_5_4 : integer range 0 to 2;
-  signal sprite_spritenumber_5_4 : integer range 0 to 7;
+  signal sprite_bytenumber_5_4 : integer range 0 to 79;
+  signal sprite_spritenumber_5_4 : integer range 0 to 15;
   signal sprite_data_5_4 : unsigned(7 downto 0);
   signal sprite_datavalid_4_3 : std_logic;
-  signal sprite_bytenumber_4_3 : integer range 0 to 2;
-  signal sprite_spritenumber_4_3 : integer range 0 to 7;
+  signal sprite_bytenumber_4_3 : integer range 0 to 79;
+  signal sprite_spritenumber_4_3 : integer range 0 to 15;
   signal sprite_data_4_3 : unsigned(7 downto 0);
   signal sprite_datavalid_3_2 : std_logic;
-  signal sprite_bytenumber_3_2 : integer range 0 to 2;
-  signal sprite_spritenumber_3_2 : integer range 0 to 7;
+  signal sprite_bytenumber_3_2 : integer range 0 to 79;
+  signal sprite_spritenumber_3_2 : integer range 0 to 15;
   signal sprite_data_3_2 : unsigned(7 downto 0);
   signal sprite_datavalid_2_1 : std_logic;
-  signal sprite_bytenumber_2_1 : integer range 0 to 2;
-  signal sprite_spritenumber_2_1 : integer range 0 to 7;
+  signal sprite_bytenumber_2_1 : integer range 0 to 79;
+  signal sprite_spritenumber_2_1 : integer range 0 to 15;
   signal sprite_data_2_1 : unsigned(7 downto 0);
   signal sprite_datavalid_1_0 : std_logic;
-  signal sprite_bytenumber_1_0 : integer range 0 to 2;
-  signal sprite_spritenumber_1_0 : integer range 0 to 7;
+  signal sprite_bytenumber_1_0 : integer range 0 to 79;
+  signal sprite_spritenumber_1_0 : integer range 0 to 15;
   signal sprite_data_1_0 : unsigned(7 downto 0);
+  signal sprite_datavalid_0_bp : std_logic;
+  signal sprite_bytenumber_0_bp : integer range 0 to 79;
+  signal sprite_spritenumber_0_bp : integer range 0 to 15;
+  signal sprite_data_0_bp : unsigned(7 downto 0);
 
-  signal sprite_number_for_data_7_6 : integer range 0 to 7;
-  signal sprite_number_for_data_6_5 : integer range 0 to 7;
-  signal sprite_number_for_data_5_4 : integer range 0 to 7;
-  signal sprite_number_for_data_4_3 : integer range 0 to 7;
-  signal sprite_number_for_data_3_2 : integer range 0 to 7;
-  signal sprite_number_for_data_2_1 : integer range 0 to 7;
-  signal sprite_number_for_data_1_0 : integer range 0 to 7;
-  signal sprite_data_offset_7_6 : integer range 0 to 1023;
-  signal sprite_data_offset_6_5 : integer range 0 to 1023;
-  signal sprite_data_offset_5_4 : integer range 0 to 1023;
-  signal sprite_data_offset_4_3 : integer range 0 to 1023;
-  signal sprite_data_offset_3_2 : integer range 0 to 1023;
-  signal sprite_data_offset_2_1 : integer range 0 to 1023;
-  signal sprite_data_offset_1_0 : integer range 0 to 1023;
+  signal sprite_number_for_data_7_6 : integer range 0 to 15;
+  signal sprite_number_for_data_6_5 : integer range 0 to 15;
+  signal sprite_number_for_data_5_4 : integer range 0 to 15;
+  signal sprite_number_for_data_4_3 : integer range 0 to 15;
+  signal sprite_number_for_data_3_2 : integer range 0 to 15;
+  signal sprite_number_for_data_2_1 : integer range 0 to 15;
+  signal sprite_number_for_data_1_0 : integer range 0 to 15;
+  signal sprite_number_for_data_0_bp : integer range 0 to 15;
+  signal sprite_data_offset_7_6 : integer range 0 to 65535;
+  signal sprite_data_offset_6_5 : integer range 0 to 65535;
+  signal sprite_data_offset_5_4 : integer range 0 to 65535;
+  signal sprite_data_offset_4_3 : integer range 0 to 65535;
+  signal sprite_data_offset_3_2 : integer range 0 to 65535;
+  signal sprite_data_offset_2_1 : integer range 0 to 65535;
+  signal sprite_data_offset_1_0 : integer range 0 to 65535;
+  signal sprite_data_offset_0_bp : integer range 0 to 65535;
 
+  signal sprite_fg_map_7_6 : std_logic_vector(7 downto 0);
+  signal sprite_fg_map_6_5 : std_logic_vector(7 downto 0);
+  signal sprite_fg_map_5_4 : std_logic_vector(7 downto 0);
+  signal sprite_fg_map_4_3 : std_logic_vector(7 downto 0);
+  signal sprite_fg_map_3_2 : std_logic_vector(7 downto 0);
+  signal sprite_fg_map_2_1 : std_logic_vector(7 downto 0);
+  signal sprite_fg_map_1_0 : std_logic_vector(7 downto 0);
+  signal sprite_fg_map_0_bp : std_logic_vector(7 downto 0);
+
+  signal sprite_map_7_6 : std_logic_vector(7 downto 0);
+  signal sprite_map_6_5 : std_logic_vector(7 downto 0);
+  signal sprite_map_5_4 : std_logic_vector(7 downto 0);
+  signal sprite_map_4_3 : std_logic_vector(7 downto 0);
+  signal sprite_map_3_2 : std_logic_vector(7 downto 0);
+  signal sprite_map_2_1 : std_logic_vector(7 downto 0);
+  signal sprite_map_1_0 : std_logic_vector(7 downto 0);
+  signal sprite_map_0_bp : std_logic_vector(7 downto 0);
+  
   signal is_foreground_7_6 : std_logic;
   signal is_foreground_6_5 : std_logic;
   signal is_foreground_5_4 : std_logic;
@@ -242,6 +374,7 @@ architecture behavioural of vicii_sprites is
   signal is_foreground_3_2 : std_logic;
   signal is_foreground_2_1 : std_logic;
   signal is_foreground_1_0 : std_logic;
+  signal is_foreground_0_bp : std_logic;
   signal is_background_7_6 : std_logic;
   signal is_background_6_5 : std_logic;
   signal is_background_5_4 : std_logic;
@@ -249,6 +382,7 @@ architecture behavioural of vicii_sprites is
   signal is_background_3_2 : std_logic;
   signal is_background_2_1 : std_logic;
   signal is_background_1_0 : std_logic;
+  signal is_background_0_bp : std_logic;
   signal x_7_6 : integer range 0 to 4095;
   signal x_6_5 : integer range 0 to 4095;
   signal x_5_4 : integer range 0 to 4095;
@@ -256,6 +390,7 @@ architecture behavioural of vicii_sprites is
   signal x_3_2 : integer range 0 to 4095;
   signal x_2_1 : integer range 0 to 4095;
   signal x_1_0 : integer range 0 to 4095;
+  signal x_0_bp : integer range 0 to 4095;
   signal y_7_6 : integer range 0 to 4095;
   signal y_6_5 : integer range 0 to 4095;
   signal y_5_4 : integer range 0 to 4095;
@@ -263,6 +398,7 @@ architecture behavioural of vicii_sprites is
   signal y_3_2 : integer range 0 to 4095;
   signal y_2_1 : integer range 0 to 4095;
   signal y_1_0 : integer range 0 to 4095;
+  signal y_0_bp : integer range 0 to 4095;
   signal border_7_6 : std_logic;
   signal border_6_5 : std_logic;
   signal border_5_4 : std_logic;
@@ -270,6 +406,7 @@ architecture behavioural of vicii_sprites is
   signal border_3_2 : std_logic;
   signal border_2_1 : std_logic;
   signal border_1_0 : std_logic;
+  signal border_0_bp : std_logic;
   signal is_sprite_7_6 : std_logic;
   signal is_sprite_6_5 : std_logic;
   signal is_sprite_5_4 : std_logic;
@@ -277,6 +414,7 @@ architecture behavioural of vicii_sprites is
   signal is_sprite_3_2 : std_logic;
   signal is_sprite_2_1 : std_logic;
   signal is_sprite_1_0 : std_logic;
+  signal is_sprite_0_bp : std_logic;
   signal is_sprite_final : std_logic;
   signal sprite_colour_7_6 : unsigned(7 downto 0);
   signal sprite_colour_6_5 : unsigned(7 downto 0);
@@ -285,6 +423,7 @@ architecture behavioural of vicii_sprites is
   signal sprite_colour_3_2 : unsigned(7 downto 0);
   signal sprite_colour_2_1 : unsigned(7 downto 0);
   signal sprite_colour_1_0 : unsigned(7 downto 0);  
+  signal sprite_colour_0_bp : unsigned(7 downto 0);  
   signal sprite_colour_final : unsigned(7 downto 0);  
   signal pixel_7_6 : unsigned(7 downto 0);
   signal pixel_6_5 : unsigned(7 downto 0);
@@ -293,6 +432,7 @@ architecture behavioural of vicii_sprites is
   signal pixel_3_2 : unsigned(7 downto 0);
   signal pixel_2_1 : unsigned(7 downto 0);
   signal pixel_1_0 : unsigned(7 downto 0);  
+  signal pixel_0_bp : unsigned(7 downto 0);  
   signal pixel_final : unsigned(7 downto 0);  
   signal alpha_7_6 : unsigned(7 downto 0);
   signal alpha_6_5 : unsigned(7 downto 0);
@@ -301,6 +441,7 @@ architecture behavioural of vicii_sprites is
   signal alpha_3_2 : unsigned(7 downto 0);
   signal alpha_2_1 : unsigned(7 downto 0);
   signal alpha_1_0 : unsigned(7 downto 0);  
+  signal alpha_0_bp : unsigned(7 downto 0);  
   signal alpha_final : unsigned(7 downto 0);  
 
 begin
@@ -320,13 +461,19 @@ begin
              sprite_bytenumber_out => sprite_bytenumber_7_6,
              sprite_spritenumber_out => sprite_spritenumber_7_6,
              sprite_data_out => sprite_data_7_6,
-
+             
              -- Sprite offset data chain for VIC-IV
              sprite_number_for_data_in => sprite_number_for_data_in,
              sprite_data_offset_in => 0,
              sprite_data_offset_out => sprite_data_offset_7_6,
              sprite_number_for_data_out => sprite_number_for_data_7_6,
-             
+
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(7),
+             sprite_extended_width_enable => sprite_extended_width_enables(7),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(7),
+             sprite_bitplane_enable => sprite_bitplane_enables(7),
+
              -- pixel data
              is_foreground_in => is_foreground_in,
              is_background_in => is_background_in,
@@ -359,7 +506,11 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(7),
              sprite_stretch_x => vicii_sprite_x_expand(7),
-             sprite_stretch_y => vicii_sprite_y_expand(7)
+             sprite_stretch_y => vicii_sprite_y_expand(7),
+             sprite_map_in => x"00",
+             sprite_fg_map_in => "00000000",
+             sprite_map_out => sprite_map_7_6,
+             sprite_fg_map_out => sprite_fg_map_7_6
              );
   sprite6: component sprite
     port map(pixelclock => pixelclock,
@@ -379,6 +530,12 @@ begin
              sprite_data_offset_in => sprite_data_offset_7_6,
              sprite_data_offset_out => sprite_data_offset_6_5,
              sprite_number_for_data_out => sprite_number_for_data_6_5,
+
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(6),
+             sprite_extended_width_enable => sprite_extended_width_enables(6),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(6),
+             sprite_bitplane_enable => sprite_bitplane_enables(6),
 
              -- pixel data
              is_foreground_in => is_foreground_7_6,
@@ -412,7 +569,12 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(6),
              sprite_stretch_x => vicii_sprite_x_expand(6),
-             sprite_stretch_y => vicii_sprite_y_expand(6)
+             sprite_stretch_y => vicii_sprite_y_expand(6),
+
+             sprite_fg_map_in => sprite_fg_map_7_6,
+             sprite_map_in => sprite_map_7_6,
+             sprite_map_out => sprite_map_6_5,
+             sprite_fg_map_out => sprite_fg_map_6_5
              );
     sprite5: component sprite
     port map(pixelclock => pixelclock,
@@ -432,6 +594,12 @@ begin
              sprite_data_offset_in => sprite_data_offset_6_5,
              sprite_data_offset_out => sprite_data_offset_5_4,
              sprite_number_for_data_out => sprite_number_for_data_5_4,
+
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(5),
+             sprite_extended_width_enable => sprite_extended_width_enables(5),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(5),
+             sprite_bitplane_enable => sprite_bitplane_enables(5),
 
              -- pixel data
              is_foreground_in => is_foreground_6_5,
@@ -465,7 +633,12 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(5),
              sprite_stretch_x => vicii_sprite_x_expand(5),
-             sprite_stretch_y => vicii_sprite_y_expand(5)
+             sprite_stretch_y => vicii_sprite_y_expand(5),
+
+             sprite_fg_map_in => sprite_fg_map_6_5,
+             sprite_map_in => sprite_map_6_5,
+             sprite_map_out => sprite_map_5_4,
+             sprite_fg_map_out => sprite_fg_map_5_4
              );
     sprite4: component sprite
     port map(pixelclock => pixelclock,
@@ -479,6 +652,12 @@ begin
              sprite_bytenumber_out => sprite_bytenumber_4_3,
              sprite_spritenumber_out => sprite_spritenumber_4_3,
              sprite_data_out => sprite_data_4_3,
+
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(4),
+             sprite_extended_width_enable => sprite_extended_width_enables(4),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(4),
+             sprite_bitplane_enable => sprite_bitplane_enables(4),
 
              -- Sprite offset data chain for VIC-IV
              sprite_number_for_data_in => sprite_number_for_data_5_4,
@@ -518,7 +697,12 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(4),
              sprite_stretch_x => vicii_sprite_x_expand(4),
-             sprite_stretch_y => vicii_sprite_y_expand(4)
+             sprite_stretch_y => vicii_sprite_y_expand(4),
+
+             sprite_fg_map_in => sprite_fg_map_5_4,
+             sprite_map_in => sprite_map_5_4,
+             sprite_map_out => sprite_map_4_3,
+             sprite_fg_map_out => sprite_fg_map_4_3
              );
     sprite3: component sprite
     port map(pixelclock => pixelclock,
@@ -532,6 +716,12 @@ begin
              sprite_bytenumber_out => sprite_bytenumber_3_2,
              sprite_spritenumber_out => sprite_spritenumber_3_2,
              sprite_data_out => sprite_data_3_2,
+
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(3),
+             sprite_extended_width_enable => sprite_extended_width_enables(3),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(3),
+             sprite_bitplane_enable => sprite_bitplane_enables(3),
 
              -- Sprite offset data chain for VIC-IV
              sprite_number_for_data_in => sprite_number_for_data_4_3,
@@ -571,7 +761,12 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(3),
              sprite_stretch_x => vicii_sprite_x_expand(3),
-             sprite_stretch_y => vicii_sprite_y_expand(3)
+             sprite_stretch_y => vicii_sprite_y_expand(3),
+
+             sprite_fg_map_in => sprite_fg_map_4_3,
+             sprite_map_in => sprite_map_4_3,
+             sprite_map_out => sprite_map_3_2,
+             sprite_fg_map_out => sprite_fg_map_3_2
              );
     sprite2: component sprite
     port map(pixelclock => pixelclock,
@@ -586,6 +781,12 @@ begin
              sprite_spritenumber_out => sprite_spritenumber_2_1,
              sprite_data_out => sprite_data_2_1,
 
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(2),
+             sprite_extended_width_enable => sprite_extended_width_enables(2),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(2),
+             sprite_bitplane_enable => sprite_bitplane_enables(2),
+             
              -- Sprite offset data chain for VIC-IV
              sprite_number_for_data_in => sprite_number_for_data_3_2,
              sprite_data_offset_in => sprite_data_offset_3_2,
@@ -624,7 +825,12 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(2),
              sprite_stretch_x => vicii_sprite_x_expand(2),
-             sprite_stretch_y => vicii_sprite_y_expand(2)
+             sprite_stretch_y => vicii_sprite_y_expand(2),
+
+             sprite_fg_map_in => sprite_fg_map_3_2,
+             sprite_map_in => sprite_map_3_2,
+             sprite_map_out => sprite_map_2_1,
+             sprite_fg_map_out => sprite_fg_map_2_1
              );
     sprite1: component sprite
     port map(pixelclock => pixelclock,
@@ -639,6 +845,12 @@ begin
              sprite_spritenumber_out => sprite_spritenumber_1_0,
              sprite_data_out => sprite_data_1_0,
 
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(1),
+             sprite_extended_width_enable => sprite_extended_width_enables(1),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(1),
+             sprite_bitplane_enable => sprite_bitplane_enables(1),
+             
              -- Sprite offset data chain for VIC-IV
              sprite_number_for_data_in => sprite_number_for_data_2_1,
              sprite_data_offset_in => sprite_data_offset_2_1,
@@ -677,7 +889,12 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(1),
              sprite_stretch_x => vicii_sprite_x_expand(1),
-             sprite_stretch_y => vicii_sprite_y_expand(1)
+             sprite_stretch_y => vicii_sprite_y_expand(1),
+
+             sprite_fg_map_in => sprite_fg_map_2_1,
+             sprite_map_in => sprite_map_2_1,
+             sprite_map_out => sprite_map_1_0,
+             sprite_fg_map_out => sprite_fg_map_1_0
              );
     sprite0: component sprite
     port map(pixelclock => pixelclock,
@@ -687,16 +904,22 @@ begin
              sprite_spritenumber_in => sprite_spritenumber_1_0,
              sprite_data_in => sprite_data_1_0,
              -- and to pass it out to the next sprite
-             sprite_datavalid_out => sprite_datavalid_out,
-             sprite_bytenumber_out => sprite_bytenumber_out,
-             sprite_spritenumber_out => sprite_spritenumber_out,
-             sprite_data_out => sprite_data_out,
+             sprite_datavalid_out => sprite_datavalid_0_bp,
+             sprite_bytenumber_out => sprite_bytenumber_0_bp,
+             sprite_spritenumber_out => sprite_spritenumber_0_bp,
+             sprite_data_out => sprite_data_0_bp,
+
+             sprite_extended_height_size => sprite_extended_height_size,
+             sprite_extended_height_enable => sprite_extended_height_enables(0),
+             sprite_extended_width_enable => sprite_extended_width_enables(0),
+             sprite_horizontal_tile_enable => sprite_horizontal_tile_enables(0),
+             sprite_bitplane_enable => sprite_bitplane_enables(0),
 
              -- Sprite offset data chain for VIC-IV
              sprite_number_for_data_in => sprite_number_for_data_1_0,
              sprite_data_offset_in => sprite_data_offset_1_0,
-             sprite_data_offset_out => sprite_data_offset_out,
-             sprite_number_for_data_out => sprite_number_for_data_out,
+             sprite_data_offset_out => sprite_data_offset_0_bp,
+             sprite_number_for_data_out => sprite_number_for_data_0_bp,
 
              -- pixel data
              is_foreground_in => is_foreground_1_0,
@@ -708,15 +931,15 @@ begin
              alpha_in => alpha_1_0,
              is_sprite_in => is_sprite_1_0,
              sprite_colour_in => sprite_colour_1_0,
-             is_foreground_out => is_foreground_out,
-             is_background_out => is_background_out,
-             x_out => x_out,
-             y_out => y_out,
-             border_out => border_out,
-             pixel_out => pixel_final,
-             alpha_out => alpha_final,
-             is_sprite_out => is_sprite_final,
-             sprite_colour_out => sprite_colour_final,
+             is_foreground_out => is_foreground_0_bp,
+             is_background_out => is_background_0_bp,
+             x_out => x_0_bp,
+             y_out => y_0_bp,
+             border_out => border_0_bp,
+             pixel_out => pixel_0_bp,
+             alpha_out => alpha_0_bp,
+             is_sprite_out => is_sprite_0_bp,
+             sprite_colour_out => sprite_colour_0_bp,
              
              -- Also pass in sprite data
              sprite_number => 0,
@@ -730,9 +953,80 @@ begin
              sprite_multi1_colour => sprite_multi1_colour,
              sprite_is_multicolour => vicii_sprite_multicolour_bits(0),
              sprite_stretch_x => vicii_sprite_x_expand(0),
-             sprite_stretch_y => vicii_sprite_y_expand(0)
+             sprite_stretch_y => vicii_sprite_y_expand(0),
+
+             sprite_fg_map_in => sprite_fg_map_1_0,
+             sprite_map_in => sprite_map_1_0,
+             sprite_map_out => sprite_map_0_bp,
+             sprite_fg_map_out => sprite_fg_map_0_bp
              );
-  
+
+  bitplanes0: component bitplanes
+    port map(pixelclock => pixelclock,
+             ioclock => ioclock,
+
+             fastio_address => unsigned(fastio_addr),
+             fastio_wdata => unsigned(fastio_wdata),
+             fastio_write => fastio_write,
+
+             -- Bitplane mode information
+             bitplane_h640 => bitplane_h640,
+             bitplane_h1280 => bitplane_h1280,
+             bitplane_mode_in => bitplane_mode_in,
+             bitplane_enables_in => bitplane_enables_in,
+             bitplane_complements_in => bitplane_complements_in,
+             bitplanes_y_start => bitplanes_y_start,
+             bitplanes_x_start => bitplanes_x_start,
+             bitplane_sixteen_colour_mode_flags =>
+               bitplane_sixteen_colour_mode_flags_in,
+             
+             -- Receive sprite data chain to receive data from VIC-IV
+             sprite_datavalid_in => sprite_datavalid_0_bp,
+             sprite_bytenumber_in => sprite_bytenumber_0_bp,
+             sprite_spritenumber_in => sprite_spritenumber_0_bp,
+             sprite_data_in => sprite_data_0_bp,
+             -- and to pass it out to the next sprite
+             sprite_datavalid_out => sprite_datavalid_out,
+             sprite_bytenumber_out => sprite_bytenumber_out,
+             sprite_spritenumber_out => sprite_spritenumber_out,
+             sprite_data_out => sprite_data_out,
+
+             -- XXX Bitplane registers here
+             
+             -- Sprite offset data chain for VIC-IV
+             sprite_number_for_data_in => sprite_number_for_data_0_bp,
+             sprite_data_offset_in => sprite_data_offset_0_bp,
+             sprite_data_offset_out => sprite_data_offset_out,
+             sprite_number_for_data_out => sprite_number_for_data_out,
+
+             -- pixel data
+             is_foreground_in => is_foreground_0_bp,
+             is_background_in => is_background_0_bp,
+             x_in => x_0_bp,
+             x640_in => x640_in,
+             x1280_in => x1280_in,
+             y_in => y_0_bp,
+             border_in => border_0_bp,
+             pixel_in => pixel_0_bp,
+             alpha_in => alpha_0_bp,
+             is_sprite_in => is_sprite_0_bp,
+             sprite_colour_in => sprite_colour_0_bp,
+             is_foreground_out => is_foreground_out,
+             is_background_out => is_background_out,
+             x_out => x_out,
+             y_out => y_out,
+             border_out => border_out,
+             pixel_out => pixel_final,
+             alpha_out => alpha_final,
+             is_sprite_out => is_sprite_final,
+             sprite_colour_out => sprite_colour_final,
+             
+             sprite_fg_map_in => sprite_fg_map_0_bp,
+             sprite_map_in => sprite_map_0_bp,
+             sprite_map_out => sprite_map_final,
+             sprite_fg_map_out => sprite_fg_map_final
+             );
+
   
   process(ioclock) is
     variable register_bank : unsigned(7 downto 0);

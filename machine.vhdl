@@ -145,20 +145,27 @@ entity machine is
 
          ----------------------------------------------------------------------
          -- PS/2 adapted USB keyboard & joystick connector.
-         -- For now we will use a keyrah adapter to connect to the keyboard.
+         -- (For using a keyrah adapter to connect to the keyboard.)
          ----------------------------------------------------------------------
          ps2data : in std_logic;
          ps2clock : in std_logic;
 
          ----------------------------------------------------------------------
+         -- PMOD interface for keyboard, joystick, expansion port etc board.
+         ----------------------------------------------------------------------
+         pmod_clock : in std_logic;
+         pmod_start_of_sequence : in std_logic;
+         pmod_data_in : in std_logic_vector(3 downto 0);
+         pmod_data_out : out std_logic_vector(1 downto 0);
+         pmoda : inout std_logic_vector(7 downto 0);
+
+         uart_rx : in std_logic;
+         uart_tx : out std_logic;
+    
+         ----------------------------------------------------------------------
          -- Debug interfaces on Nexys4 board
          ----------------------------------------------------------------------
-         led0 : out std_logic;
-         led1 : out std_logic;
-         led2 : out std_logic;
-         led3 : out std_logic;
-         led4 : out std_logic;
-         led5 : out std_logic;
+         led : out std_logic_vector(15 downto 0);
          sw : in std_logic_vector(15 downto 0);
          btn : in std_logic_vector(4 downto 0);
 
@@ -187,6 +194,9 @@ architecture Behavioral of machine is
     
     fastio_read : in std_logic;
     fastio_write : in std_logic;
+
+    monitor_char : in unsigned(7 downto 0);
+    monitor_char_toggle : in std_logic;
     
     monitor_proceed : in std_logic;
     monitor_waitstates : in unsigned(7 downto 0);
@@ -239,6 +249,11 @@ architecture Behavioral of machine is
       hyper_trap : in std_logic;
       cpu_hypervisor_mode : out std_logic;
 
+      cpuis6502 : out std_logic;
+      cpuspeed : out unsigned(7 downto 0);
+      
+      irq_hypervisor : in std_logic_vector(2 downto 0);  -- JBM
+
       no_kickstart : in std_logic;
 
       ddr_counter : in unsigned(7 downto 0);
@@ -250,7 +265,12 @@ architecture Behavioral of machine is
       vicii_2mhz : in std_logic;
       viciii_fast : in std_logic;
       viciv_fast : in std_logic;
-      
+      speed_gate : in std_logic;
+      speed_gate_enable : out std_logic;
+
+      monitor_char : out unsigned(7 downto 0);
+      monitor_char_toggle : out std_logic;    
+
       monitor_proceed : out std_logic;
       monitor_waitstates : out unsigned(7 downto 0);
       monitor_request_reflected : out std_logic;
@@ -317,16 +337,6 @@ architecture Behavioral of machine is
       chipram_we : OUT STD_LOGIC;
       chipram_address : OUT unsigned(16 DOWNTO 0);
       chipram_datain : OUT unsigned(7 DOWNTO 0);
-
-      ---------------------------------------------------------------------------
-      -- bitplane engine DMA access
-      ---------------------------------------------------------------------------
-      dma_address : in unsigned(31 downto 0);
-      dma_count : in unsigned(7 downto 0);
-      dma_request_set : in std_logic;
-      dma_data_valid : out std_logic := '0';
-      dma_data_in : out unsigned(7 downto 0) := x"00";
-      dma_count_in : out unsigned(7 downto 0) := x"00";
       
       ---------------------------------------------------------------------------
       -- fast IO port (clocked at core clock). 1MB address space
@@ -375,6 +385,9 @@ architecture Behavioral of machine is
 
       led : in std_logic;
       motor : in std_logic;
+      drive_led_out : out std_logic;
+
+      xray_mode : in std_logic;
       
       ----------------------------------------------------------------------
       -- VGA output
@@ -398,13 +411,6 @@ architecture Behavioral of machine is
       chipram_address : IN unsigned(16 DOWNTO 0);
       chipram_datain : IN unsigned(7 DOWNTO 0);
 
-      dma_address : out unsigned(31 downto 0);
-      dma_count : out unsigned(7 downto 0);
-      dma_request_set : out std_logic := '0';
-      dma_data_valid : in std_logic;
-      dma_data_in : in unsigned(7 downto 0);
-      dma_count_in : in unsigned(7 downto 0);
-      
       -----------------------------------------------------------------------------
       -- FastIO interface for accessing video registers
       -----------------------------------------------------------------------------
@@ -447,6 +453,10 @@ architecture Behavioral of machine is
           
           key_scancode : in unsigned(15 downto 0);
           key_scancode_toggle : in std_logic;
+
+          capslock_state : inout std_logic;
+          speed_gate : out std_logic;
+          speed_gate_enable : in std_logic;
           
           uartclock : in std_logic;
           phi0 : in std_logic;
@@ -466,13 +476,20 @@ architecture Behavioral of machine is
           colourram_at_dc00 : in std_logic;
           viciii_iomode : in std_logic_vector(1 downto 0);
 
-          led : out std_logic;
+          drive_led : out std_logic;
           motor : out std_logic;
+          drive_led_out : in std_logic;
 
           sw : in std_logic_vector(15 downto 0);
           btn : in std_logic_vector(4 downto 0);
           seg_led : out unsigned(31 downto 0);
 
+          pmod_clock : in std_logic;
+          pmod_start_of_sequence : in std_logic;
+          pmod_data_in : in std_logic_vector(3 downto 0);
+          pmod_data_out : out std_logic_vector(1 downto 0);
+          pmoda : inout std_logic_vector(7 downto 0);
+          
           pixel_stream_in : in unsigned (7 downto 0);
           pixel_y : in unsigned (11 downto 0);
           pixel_valid : in std_logic;
@@ -536,15 +553,23 @@ architecture Behavioral of machine is
           tmpSCL : out std_logic;
           tmpInt : in std_logic;
           tmpCT : in std_logic;
-          
+
+          uart_rx : in std_logic;
+          uart_tx : out std_logic;
+
           ps2data : in std_logic;
           ps2clock : in std_logic
           );
   end component;
 
+  signal pmodb_in_buffer : std_logic_vector(5 downto 0);
+  signal pmodb_out_buffer : std_logic_vector(1 downto 0);
+  
   signal key_scancode : unsigned(15 downto 0);
   signal key_scancode_toggle : std_logic;
 
+  signal xray_mode : std_logic;
+  
   signal cpu_hypervisor_mode : std_logic;
 
   signal reg_isr_out : unsigned(7 downto 0);
@@ -560,9 +585,13 @@ architecture Behavioral of machine is
   signal vicii_2mhz : std_logic;
   signal viciii_fast : std_logic;
   signal viciv_fast : std_logic;
-
-  signal led : std_logic;
+  signal capslock_state : std_logic;
+  signal speed_gate : std_logic;
+  signal speed_gate_enable : std_logic;
+  
+  signal drive_led : std_logic;
   signal motor : std_logic;
+  signal drive_led_out : std_logic;
   
   signal seg_led_data : unsigned(31 downto 0);
 
@@ -589,13 +618,6 @@ architecture Behavioral of machine is
   signal colour_ram_fastio_rdata : std_logic_vector(7 downto 0);
   signal sector_buffer_mapped : std_logic;
 
-  signal dma_address : unsigned(31 downto 0);
-  signal dma_count : unsigned(7 downto 0);
-  signal dma_request_set : std_logic := '0';
-  signal dma_data_valid : std_logic;
-  signal dma_data_in : unsigned(7 downto 0);
-  signal dma_count_in : unsigned(7 downto 0);
-  
   signal chipram_we : STD_LOGIC;
   signal chipram_address : unsigned(16 DOWNTO 0);
   signal chipram_datain : unsigned(7 DOWNTO 0);
@@ -636,6 +658,8 @@ architecture Behavioral of machine is
   signal monitor_mem_stage_trace_mode : std_logic;
   signal monitor_mem_trace_mode : std_logic;
   signal monitor_mem_trace_toggle : std_logic;
+  signal monitor_char : unsigned(7 downto 0);
+  signal monitor_char_toggle : std_logic;
   
   signal monitor_a : unsigned(7 downto 0);
   signal monitor_b : unsigned(7 downto 0);
@@ -649,6 +673,10 @@ architecture Behavioral of machine is
   signal monitor_ibytes : std_logic_vector(3 downto 0);
   signal monitor_arg1 : unsigned(7 downto 0);
   signal monitor_arg2 : unsigned(7 downto 0);
+
+  signal cpuis6502 : std_logic;
+  signal cpuspeed : unsigned(7 downto 0);
+
   
   signal segled_counter : unsigned(19 downto 0) := (others => '0');
 
@@ -704,12 +732,21 @@ begin
       power_on_reset(7) <= '1';
       power_on_reset(6 downto 0) <= power_on_reset(7 downto 1);
 
-            led0 <= irq;
-      led1 <= nmi;
-      led2 <= combinedirq;
-      led3 <= combinednmi;
-      led4 <= io_irq;
-      led5 <= io_nmi;
+      led(0) <= irq;
+      led(1) <= nmi;
+      led(2) <= combinedirq;
+      led(3) <= combinednmi;
+      led(4) <= io_irq;
+      led(5) <= io_nmi;
+      led(9 downto 6) <= (others => '0');
+      led(10) <= cpu_hypervisor_mode;           -- JBM
+      led(11) <= monitor_hypervisor_mode;       -- JBM
+      led(12) <= '0';                           -- JBM
+      led(15) <= speed_gate_enable;
+      led(14) <= speed_gate;
+      led(13) <= capslock_state;
+
+      xray_mode <= sw(1);
       
       segled_counter <= segled_counter + 1;
 
@@ -733,6 +770,23 @@ begin
       --elsif segled_counter(17 downto 15)=7 then
       --  digit := std_logic_vector(monitor_state(15 downto 12));
       --end if;
+      --if segled_counter(17 downto 15)=0 then
+      --  digit := std_logic_vector(slowram_addr_reflect(3 downto 0));
+      --elsif segled_counter(17 downto 15)=1 then
+      --  digit := std_logic_vector(slowram_addr_reflect(7 downto 4));
+      --elsif segled_counter(17 downto 15)=2 then
+      --  digit := std_logic_vector(slowram_addr_reflect(11 downto 8));
+      --elsif segled_counter(17 downto 15)=3 then
+      --  digit := std_logic_vector(slowram_addr_reflect(15 downto 12));
+      --elsif segled_counter(17 downto 15)=4 then
+      --  digit := std_logic_vector(slowram_addr_reflect(19 downto 16));
+      --elsif segled_counter(17 downto 15)=5 then
+      --  digit := std_logic_vector(slowram_addr_reflect(23 downto 20));
+      --elsif segled_counter(17 downto 15)=6 then
+      --  digit := '1'&std_logic_vector(slowram_addr_reflect(26 downto 24));
+      --elsif segled_counter(17 downto 15)=7 then
+      --  digit := std_logic_vector(slowram_datain_reflect(3 downto 0));
+      --end if;
       if segled_counter(17 downto 15)=0 then
         digit := std_logic_vector(seg_led_data(3 downto 0));
       elsif segled_counter(17 downto 15)=1 then
@@ -742,15 +796,23 @@ begin
       elsif segled_counter(17 downto 15)=3 then
         digit := std_logic_vector(seg_led_data(15 downto 12));
       elsif segled_counter(17 downto 15)=4 then
-        digit := std_logic_vector(seg_led_data(19 downto 16));
+        --digit := std_logic_vector(seg_led_data(19 downto 16));
+        digit := (others => '0');
       elsif segled_counter(17 downto 15)=5 then
-        digit := std_logic_vector(seg_led_data(23 downto 20));
+        --digit := std_logic_vector(seg_led_data(23 downto 20));
+        digit := (others => '0');
       elsif segled_counter(17 downto 15)=6 then
         digit := std_logic_vector(seg_led_data(27 downto 24));
       elsif segled_counter(17 downto 15)=7 then
         digit := std_logic_vector(seg_led_data(31 downto 28));
       end if;
-
+      
+      if cpuis6502 = '1' then
+        seg_led_data(15 downto 0) <= x"6510";
+      else
+        seg_led_data(15 downto 0) <= x"4502";
+      end if;
+      seg_led_data(31 downto 24) <= cpuspeed;
       
       -- segments are:
       -- 7 - decimal point
@@ -803,17 +865,16 @@ begin
     irq => combinedirq,
     nmi => combinednmi,
     hyper_trap => hyper_trap,
+    speed_gate => speed_gate,
+    speed_gate_enable => speed_gate_enable,
+    cpuis6502 => cpuis6502,
+    cpuspeed => cpuspeed,
 
+    irq_hypervisor => sw(4 downto 2),    -- JBM
+    
     ddr_state => ddr_state,
     ddr_counter => ddr_counter,
 
-    dma_address => dma_address,
-    dma_count => dma_count,
-    dma_request_set => dma_request_set,
-    dma_data_valid => dma_data_valid,
-    dma_data_in => dma_data_in,
-    dma_count_in => dma_count_in,
-    
     -- Hypervisor signals: we need to tell kickstart memory whether
     -- to map or not, and we also need to be able to set the VIC-III
     -- IO mode.
@@ -829,7 +890,9 @@ begin
     vicii_2mhz => vicii_2mhz,
     viciii_fast => viciii_fast,
     viciv_fast => viciv_fast,
-    
+
+    monitor_char => monitor_char,
+    monitor_char_toggle => monitor_char_toggle,
     monitor_proceed => monitor_proceed,
 --    monitor_debug_memory_access => monitor_debug_memory_access,
     monitor_waitstates => monitor_waitstates,
@@ -923,8 +986,11 @@ begin
       irq             => vic_irq,
       reset           => reset_combined,
 
-      led => led,
+      led => drive_led,
       motor => motor,
+      drive_led_out => drive_led_out,
+
+      xray_mode => xray_mode,
       
       vsync           => vsync,
       hsync           => hsync,
@@ -950,13 +1016,6 @@ begin
       fastio_write    => fastio_write,
       fastio_wdata    => fastio_wdata,
       fastio_rdata    => fastio_vic_rdata,
-
-      dma_address => dma_address,
-      dma_count => dma_count,
-      dma_request_set => dma_request_set,
-      dma_data_valid => dma_data_valid,
-      dma_data_in => dma_data_in,
-      dma_count_in => dma_count_in,
     
       viciii_iomode => viciii_iomode,
       iomode_set_toggle => iomode_set_toggle,
@@ -978,7 +1037,10 @@ begin
     pixelclk => pixelclock,
     clock50mhz => clock50mhz,
     cpu_hypervisor_mode => cpu_hypervisor_mode,
-
+    capslock_state => capslock_state,
+    speed_gate => speed_gate,
+    speed_gate_enable => speed_gate_enable,
+    
     fpga_temperature => fpga_temperature,
     
     reg_isr_out => reg_isr_out,
@@ -998,11 +1060,12 @@ begin
     r => fastio_read, w => fastio_write,
     data_i => fastio_wdata, data_o => fastio_rdata,
     colourram_at_dc00 => colourram_at_dc00,
-    led => led,
+    drive_led => drive_led,
     motor => motor,
+    drive_led_out => drive_led_out,
     sw => sw,
     btn => btn,
-    seg_led => seg_led_data,
+--    seg_led => seg_led_data,
     viciii_iomode => viciii_iomode,
     sector_buffer_mapped => sector_buffer_mapped,
 
@@ -1012,6 +1075,16 @@ begin
     pixel_newframe => pixel_newframe,
     pixel_newraster => pixel_newraster,
 
+    pmod_clock => pmodb_in_buffer(0),
+    pmod_start_of_sequence => pmodb_in_buffer(1),
+    pmod_data_in => pmodb_in_buffer(5 downto 2),
+    pmod_data_out => pmodb_out_buffer(1 downto 0),
+    
+    pmoda => pmoda,
+
+    uart_rx => uart_rx,
+    uart_tx => uart_tx,
+    
     farcallstack_we => farcallstack_we,
     farcallstack_addr => farcallstack_addr,
     farcallstack_din => farcallstack_din,
@@ -1079,6 +1152,8 @@ begin
     key_scancode => key_scancode,
     key_scancode_toggle => key_scancode_toggle,
 
+    monitor_char => monitor_char,
+    monitor_char_toggle => monitor_char_toggle,
 --    monitor_debug_memory_access => monitor_debug_memory_access,
 --    monitor_debug_memory_access => (others => '1'),
     monitor_proceed => monitor_proceed,
@@ -1120,6 +1195,16 @@ begin
     monitor_mem_stage_trace_mode => monitor_mem_stage_trace_mode,
     monitor_mem_trace_toggle => monitor_mem_trace_toggle
   );
+
+  process (cpuclock) is
+  begin
+    if rising_edge(cpuclock) then
+      pmodb_in_buffer(0) <= pmod_clock;
+      pmodb_in_buffer(1) <= pmod_start_of_sequence;
+      pmodb_in_buffer(5 downto 2) <= pmod_data_in;
+      pmod_data_out <= pmodb_out_buffer;
+    end if;
+  end process;
   
 end Behavioral;
 

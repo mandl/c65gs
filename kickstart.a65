@@ -1,5 +1,5 @@
-; C65GS Kick Start ROM.
-; Paul Gardner-Stephen, 2014-2015.
+; MEGA65 Kick Start ROM.
+; Paul Gardner-Stephen, 2014-2016.
 ;
 ; Purpose: 
 ; 1. Verify checksum of ROM area of slow RAM.
@@ -9,8 +9,8 @@
 ; The kickstart ROM is 16KB in length, and maps at $8000-$BFFF
 ; in hypervisor mode.
 ;
-; Kickstart modifies RAM from $0000-$07FF (ZP, stack, 40-column
-; screen) during normal boot.
+; Kickstart modifies RAM from $0000-$07FFF (ZP, stack, 40-column
+; screen, 16-bit text mode) during normal boot.
 ;
 ; If Kickstart needs to load the ROM from SD card, then it may
 ; modify the first 64KB of fast ram.
@@ -192,7 +192,23 @@ trap_entry_points:
 	nop
 	jmp page_fault   ; Trap #$41 (page fault)
 	nop
-	jmp nosuchtrap   ; Trap #$42 (double-tap RESTORE key)
+	jmp double_restore_trap   ; Trap #$42 (double-tap RESTORE key)
+	nop
+	jmp nosuchtrap
+	nop
+	jmp nosuchtrap
+	nop
+	jmp nosuchtrap
+	nop
+	jmp nosuchtrap
+	nop
+	jmp nosuchtrap
+	nop
+	jmp nosuchtrap
+	nop
+	jmp nosuchtrap
+	nop
+	jmp nosuchtrap
 	nop
 	jmp nosuchtrap
 	nop
@@ -205,17 +221,16 @@ trap_entry_points:
 	jmp nosuchtrap
 	nop
 
-	; Leave room for traps to $7F
+	; Leave room for traps to $7E
+	.checkpc $81F8
+	.advance $81F8
+	; Then we have relocated CPU vectors
+	.word reset_entry_allow_etherkick ; unused vector
+	.word hypervisor_nmi ; NMI
+	.word reset_entry_allow_etherkick ; RESET
+	.word hypervisor_irq ; IRQ
+
 	.advance $8200
-
-;;; ----------------------------------------------------------------------------
-;;; Etherkick / kickup utility functions
-;;; ----------------------------------------------------------------------------
-; We place a small routine at precisely $8200 that allows etherkick to reset
-; kickstart, without it allowing etherkick mode until reset.  This allows the
-; etherkick process to update kickstart, and then start it normally, without
-; requiring the operator to fiddle any switches.
-  	    jmp reset_entry_no_etherkick
 
 ;;; ----------------------------------------------------------------------------
 ;;; Hypervisor traps
@@ -244,19 +259,29 @@ nosuchtrap:
 
 ; Return from trap with C flag clear to indicate success
 return_from_trap_with_success:
+	jsr sd_unmap_sectorbuffer	
 	; set C flag for caller to indicate success
 	lda hypervisor_flags
 	ora #$01   ; C flag is bit 0
 	sta hypervisor_flags
+
+	jsr checkpoint
+	.byte 0,"return_from_trap_with_success",0
+
 	; return from hypervisor
 	sta hypervisor_enterexit_trigger
 
 return_from_trap_with_failure:
+	jsr sd_unmap_sectorbuffer	
 	; report error in A
 	sta hypervisor_a
 	lda hypervisor_flags
-	ora #$01   ; C flag is bit 0
+	and #$fe   ; C flag is bit 0
 	sta hypervisor_flags
+
+	jsr checkpoint
+	.byte 0,"return_from_trap_with_failure",0
+
 	; return from hypervisor
 	sta hypervisor_enterexit_trigger	
 
@@ -284,6 +309,28 @@ reset_machine_state:
 		cld
 		see
 
+		; disable IRQ/NMI sources
+		lda #$7f
+		sta $DC0D
+		sta $DD0D
+		LDA #$00
+		STA $D019
+
+		sec
+		jsr enhanced_io
+
+		lda $d60d
+
+		; switch to fast mode
+		; 1. C65 fast-mode enable
+		lda $d031
+		ora #$40
+		sta $d031
+		; 2. MEGA65 48MHz enable (requires C65 or C128 fast mode to truly enable, hence the above)
+		lda $d054
+		ora #$40
+		sta $d054
+
 		; sprites off		
 		lda #$00
 		sta $d017		
@@ -299,19 +346,21 @@ reset_machine_state:
 		; enhanced ($FFD3xxx) IO page mapped at $D000,
 		; and fast RAM elsewhere.
 
-		; disable IRQ sources
-		lda #$7f
-		sta $DC0D
-		sta $DD0D
-		LDA #$00
-		STA $D019
-
-		sec
-		jsr enhanced_io
+		; Disable reset watchdog, enable flat 32-bit addressing, don't engage
+		; ROM write protect (yet), do make ASC/DIN / CAPS LOCK control CPU speed.
+		; also force 4502 CPU personality (6502 personality is still incomplete)
+		; (The watchdog was added to catch reset problems where the machine
+		; would run off somewhere odd instead of resetting properly. Now it
+		; will auto-reset after 65535 cycles if the watchdog is not cleared).
+		lda #$2a
+		sta $d67d
 
 		jsr resetdisplay
 		jsr erasescreen
 		jsr resetpalette
+
+		jsr checkpoint
+		.byte 0,"reset_machine_state",0
 
 		rts
 
@@ -346,7 +395,7 @@ reset_entry_common:
 
 		; Display GIT commit
 		ldx #<msg_gitcommit
-		ldy #<msg_gitcommit
+		ldy #>msg_gitcommit
 		jsr printmessage
 
 		; check keyboard for 0-9 down to select alternate rom
@@ -366,6 +415,7 @@ etherboot:
 		jsr setupethernet
 etherloop:
 		jsr checkethernet
+		.byte 0,"etherloop",0
 		jmp etherloop
 
 normalboot:
@@ -432,7 +482,7 @@ mountsystemdiskok:
 
 logook:
 		; iterate through directory entries looking for ordinary file 
-		; KICKUP.G65 to load into hypervisor memory ...
+		; KICKUP.M65 to load into hypervisor memory ...
 		; ... but only if we are not running a kick-up'd kickstart now.
 		lda $d67e
 		beq nextdirectoryentry3
@@ -537,7 +587,7 @@ postkickup:
 
 		; MILESTONE: Have file system properties.
 
-		; Look for C65GS.D81 to mount for F011 emulation
+		; Look for MEGA65.D81 to mount for F011 emulation
 		
 		; for now indicate that there is no disk in drive
 		lda #$00
@@ -555,114 +605,9 @@ postkickup:
 		bcc nod81
 		jsr dos_closefile
 
-		; this is the entry
-		ldx #<msg_foundd81
-		ldy #>msg_foundd81
-		jsr printmessage
-
-		; now we need to check that the file is long enough,
-		; and also that the clusters are contiguous.
-
-		; Start by opening the file
-		jsr dos_set_current_file_from_dirent
-		bcc nod81
-		jsr dos_openfile
-		bcc nod81
+		jsr dos_d81attach
+		bcc d81attachfail
 		
-		; work out how many clusters we need
-		; We need 1600 sectors, so halve for every zero tail
-		; bit in sectors per cluster.  we can do this because
-		; clusters in FAT must be 2^n sectors.
-		lda #$00
-		sta d81_clustercount 
-		sta d81_clustercount+1
-		lda #<1600
-		sta d81_clustersneeded
-		lda #>1600
-		sta d81_clustersneeded+1
-
-		; get sectors per cluster of disk
-		ldx dos_disk_table_offset
-		lda dos_disk_table+fs_fat32_sectors_per_cluster,x
-		taz
-
-l94:		tza
-		and #$01
-		bne d81firstcluster
-		tza
-		lsr
-		taz
-		lsr d81_clustersneeded+1
-		ror d81_clustersneeded
-		jmp l94				
-
-d81firstcluster:
-		; Get current cluster of D81 file, so that
-		; we can check that clusters in file are contiguous
-		ldx dos_current_file_descriptor_offset
-		ldy #0
-l94b:		lda dos_file_descriptors+dos_filedescriptor_offset_currentcluster,x
-		sta d81_clusternumber,y
-		inx
-		iny
-		cpy #4
-		bne l94b
-
-d81nextcluster:
-		; Now read through clusters and make sure that all is
-		; well.
-
-		; check that it matches expected cluster number
-		ldx dos_current_file_descriptor_offset
-		ldy #0
-l94a:		lda dos_file_descriptors+dos_filedescriptor_offset_currentcluster,x
-		cmp d81_clusternumber,y
-		bne d81isfragged
-		inx
-		iny
-		cpy #4
-		bne l94a
-
-		; increment number of clusters found so far
-		inc d81_clustercount
-		bne l96
-		inc d81_clustercount+1
-l96:
-
-		; increment expected cluster number
-		clc
-		lda d81_clusternumber
-		adc #$01
-		sta d81_clusternumber
-		lda d81_clusternumber+1
-		adc #$00
-		sta d81_clusternumber+1
-		lda d81_clusternumber+2
-		adc #$00
-		sta d81_clusternumber+2
-		lda d81_clusternumber+3
-		adc #$00
-		sta d81_clusternumber+3
-
-		jsr dos_file_advance_to_next_cluster
-		bcs d81nextcluster
-
-		jsr dos_closefile
-
-		; read to end of D81 file, and it is contiguous
-		; now check that it is the right length
-
-		lda d81_clustersneeded
-		cmp d81_clustercount
-		bne d81wronglength
-		
-		lda d81_clustersneeded+1
-		cmp d81_clustercount+1
-		bne d81wronglength
-
-		; D81 is good, so set flag 
-		lda #$07
-		sta $d68b
 		ldx #<msg_d81mounted
 		ldy #>msg_d81mounted
 		jsr printmessage
@@ -670,20 +615,7 @@ l96:
 		; all done, move on to loading the ROM
 		jmp findrom
 
-d81wronglength:
-		ldx #<msg_d81wronglength
-		ldy #>msg_d81wronglength
-		jsr printmessage
-		jmp findrom
-
-d81isfragged:
-
-		ldx #<msg_d81fragged
-		ldy #>msg_d81fragged
-		jsr printmessage
-		jmp findrom
-
-nod81:
+d81attachfail:
 		; we couldn't find the D81 file, so tell the user
 		ldx #<msg_nod81
 		ldy #>msg_nod81
@@ -712,7 +644,7 @@ loadrom:
 		jsr printmessage
 
 
-		; Load CHARROM.G65 into character ROM
+		; Load CHARROM.M65 into character ROM
 		ldx #<txt_c65gscharrom
 		ldy #>txt_c65gscharrom
 		jsr dos_setname
@@ -992,8 +924,10 @@ sd_map_sectorbuffer:
 		rts
 
 sd_unmap_sectorbuffer:
+		pha
 		lda #$82
 		sta $D680
+		pla
 		sec
 		rts
 
@@ -1152,9 +1086,9 @@ checkromok:
 		lda $d6f1
 		and #$20
 		bne checksumfails
-		; or if loading a ROM other than C65GS.ROM, then assume ROM
+		; or if loading a ROM other than MEGA65.ROM, then assume ROM
 		; is invalid
-		lda txt_c65gsrom+5
+		lda txt_c65gsrom+6
 		cmp #'.
 		bne checksumfails
 	
@@ -1327,8 +1261,10 @@ resetdisplay:
 		; reset screen
 		lda #$40
 		sta $d030
-		lda #$00
+		lda $d031
+		and #$40
 		sta $d031
+		lda #$00
 		sta $D020
 		sta $D021
 		sta $D054
@@ -1351,9 +1287,9 @@ resetdisplay:
 		sta $d054
 		; and 80 bytes (40 16-bit characters) per row.
 		lda #<80
-		sta $d040
+		sta $d058
 		lda #>80
-		sta $d041
+		sta $d059
 		
 		rts
 
@@ -1832,9 +1768,9 @@ g61:		sta $0800,x
 		lda #$00
 		sta $d054
 		lda #<40
-		sta $d040
+		sta $d058
 		lda #>40
-		sta $d041
+		sta $d059
 
 
 		jsr task_set_c64_memorymap
@@ -1904,7 +1840,7 @@ enhanced_io:
 		lda #$00
 		sta VICIV_MAGIC
 		rts
-l1:		; Enable VIC-IV / C65GS IO
+l1:		; Enable VIC-IV / MEGA65 IO
 		lda #$47
 		sta VICIV_MAGIC
 		lda #$53
@@ -1957,9 +1893,9 @@ k4:		cpx #$fd
 		lda #$34
 k2:		
 		; put character into 6th byte position of ROM file name.
-		; so no key looks for C65GS.ROM, where as 0-9 will look
-		; for C65GSx.ROM, where x is the number.
-		ldx #5
+		; so no key looks for MEGA65.ROM, where as 0-9 will look
+		; for MEGA65x.ROM, where x is the number.
+		ldx #6
 		cmp #$20
 		beq default_rom
 		sta txt_c65gsrom,x
@@ -1976,6 +1912,9 @@ default_rom:
 		inx
 		lda #'M
 		sta txt_c65gsrom,x
+		inx
+		lda #0
+   		sta txt_c65gsrom,x    
 
 		rts
 
@@ -2278,13 +2217,232 @@ d1:		inx
 		plp
 		rts
 
+hypervisor_nmi:
+hypervisor_irq:
+		; Default interrupt handlers for hypervisor: for now just mask the
+		; interrupt source.  Later we can have raster splits in the boot
+		; display if we so choose.
+		sei
+		rti
 
-; messages.  All have to be 40 bytes long
-msg_kickstart:        .byte "C65GS KICKSTART V00.03",0
+hypervisor_setup_copy_region:
+	; Hypervisor copy region sit entirely within the first 32KB of
+	; mapped address space. Since we allow a 256 byte copy region,
+	; we limit the start address to the range $0000-$7EFF
+	; XXX - We should also return an error if there is an IO
+	; region mapped there, so that the hypervisor can't be tricked
+	; into doing privileged IO operations as part of the copy-back
+	
+	lda hypervisor_y
+	bmi hscr1
+	cmp #$7f
+	beq hscr1
+	sta hypervisor_userspace_copy_vector+1
+	lda #$00
+	sta hypervisor_userspace_copy_vector
+
+	jsr checkpoint
+	.byte 0,"hypervisor_setup_copy_region <success>",0
+
+	sec
+	rts
+hscr1:
+	jsr checkpoint
+	.byte 0,"hypervisor_setup_copy_region <failure>",0
+
+	lda #dos_errorcode_invalid_address
+	jmp dos_return_error		
+
+checkpoint:
+	; Routine to record the progress of code through the hypervisor for
+	; debugging problems in the hypervisor.
+	; If the JSR checkpoint is followed by $00, then a text string describing the
+	; checkpoint is inserted into the checkpoint log.
+	; Checkpoint data is recorded in the 2nd 16KB of colour RAM.
+
+	; Save all registers and CPU flags
+	sta checkpoint_a
+	stx checkpoint_x
+	sty checkpoint_y
+	stz checkpoint_z
+	php
+	pla
+	sta checkpoint_p
+
+	; pull PC return address from stack
+	; (JSR pushes return_address-1, so add one)
+	pla
+	clc
+	adc #$01
+	sta checkpoint_pcl
+	pla
+	adc #$00
+	sta checkpoint_pch
+
+	; Only do checkpoints visibly if switch 12 is set
+	lda $d6f1
+	and #$10
+	beq cp9
+
+	inc $d020
+
+	; Write checkpoint byte values out as hex into message template
+	ldx checkpoint_a
+	jsr checkpoint_bytetohex
+	sty msg_checkpoint_a+0
+	stx msg_checkpoint_a+1
+	ldx checkpoint_x
+	jsr checkpoint_bytetohex
+	sty msg_checkpoint_x+0
+	stx msg_checkpoint_x+1
+	ldx checkpoint_y
+	jsr checkpoint_bytetohex
+	sty msg_checkpoint_y+0
+	stx msg_checkpoint_y+1
+	ldx checkpoint_z
+	jsr checkpoint_bytetohex
+	sty msg_checkpoint_z+0
+	stx msg_checkpoint_z+1
+	ldx checkpoint_p
+	jsr checkpoint_bytetohex
+	sty msg_checkpoint_p+0
+	stx msg_checkpoint_p+1
+	ldx checkpoint_pch
+	jsr checkpoint_bytetohex
+	sty msg_checkpoint_pc+0
+	stx msg_checkpoint_pc+1
+	ldx checkpoint_pcl
+	jsr checkpoint_bytetohex
+	sty msg_checkpoint_pc+2
+	stx msg_checkpoint_pc+3
+
+	; Clear out checkpoint message
+	ldx #39
+	lda #$20
+cp4:	sta msg_checkpointmsg,x
+	dex
+	bpl cp4
+cp9:
+	; Read next byte following the return address to see if it is $00,
+	; if so, then also store the $00-terminated text message that follows.
+	; e.g.:
+	; jsr checkpoint
+	; .byte 0,"OPEN DIRECTORY",0
+	; to record a checkpoint with the string "OPEN DIRECTORY"	
+	ldy #$00
+	lda (<checkpoint_pcl),y
+
+	bne nocheckpointmessage
+
+	; Copy null-terminated checkpoint string
+	ldx #$00
+	iny
+cp3:	lda (<checkpoint_pcl),y
+	beq endofcheckpointmessage
+	sta msg_checkpointmsg,x
+	inx
+	iny
+	cpy #40
+	bne cp3
+	; flush out any excess bytes at end of message
+cp44:	lda (<checkpoint_pcl),y
+	beq endofcheckpointmessage
+	iny
+	bra cp44
+	
+
+endofcheckpointmessage:
+	; Skip $00 at end of message
+	iny
+	
+nocheckpointmessage:
+
+	; Advance return address following any checkpoint message
+	tya
+	clc	
+	adc checkpoint_pcl
+	sta checkpoint_pcl
+	lda checkpoint_pch
+	adc #$00
+	sta checkpoint_pch
+
+	; Only do checkpoints visibly if switch 12 is set
+	lda $d6f1
+	and #$10
+	beq checkpoint_return
+
+	; output checkpoint message to serial monitor
+	ldx #0
+cp5:	lda msg_checkpoint,x
+	sta hypervisor_write_char_to_serial_monitor
+	inx
+
+	; delay at least 2,000 cycles to allow character to be written
+	; each inner loop is 2 + 256 * (2+3) = ~1,250 cycles
+	; so 2 such loops should take long enough
+	ldy #2
+	ldz #0
+cp6:	inz
+	bne cp6
+	dey
+	bpl cp6
+
+	cmp #10
+	bne cp5
+checkpoint_return:
+	; restore registers
+	lda checkpoint_p
+	php
+	lda checkpoint_a
+	ldx checkpoint_x
+	ldy checkpoint_y
+	ldz checkpoint_z
+	plp
+
+	; return by jumping to the 
+	jmp (checkpoint_pcl)
+
+checkpoint_bytetohex:
+	txa
+	and #$f0
+	lsr
+	lsr
+	lsr
+	lsr
+	jsr checkpoint_nybltohex
+	tay
+	txa
+	and #$0f
+	jsr checkpoint_nybltohex
+	tax	
+	rts
+checkpoint_nybltohex:
+	and #$0f
+	ora #$30
+	cmp #$3a
+	bcs cpnth1
+	rts
+cpnth1:	adc #$06
+	rts
+
+; checkpoint message
+msg_checkpoint:	      .byte "Checkpoint @ $"
+msg_checkpoint_pc:    .byte "%%%% A:$"
+msg_checkpoint_a:     .byte "%%, X:$"
+msg_checkpoint_x:     .byte "%%, Y:$"
+msg_checkpoint_y:     .byte "%%, Z:$"
+msg_checkpoint_z:     .byte "%%, P:$"
+msg_checkpoint_p:     .byte "%% :"
+msg_checkpointmsg:    .byte "                                        "
+		      .byte 13,10  ; CR/LF
+msg_checkpoint_eom:		     
+
+; messages.  All have to be <=40 bytes long
+msg_kickstart:        .byte "MEGA65 KICKSTART V00.04",0
 msg_romok:            .byte "ROM CHECKSUM OK - BOOTING",0
 msg_rombad:	      .byte "ROM CHECKSUM FAIL - LOADING ROM",0
-msg_charrombad:	      .byte "COULD NOT LOAD CHARROM.G65",0
-msg_charromloaded:    .byte "LOADED CHARROM.G65 ($$$$ PAGES)",0
+msg_charrombad:	      .byte "COULD NOT LOAD CHARROM.M65",0
+msg_charromloaded:    .byte "LOADED CHARROM.M65 ($$$$ PAGES)",0
 msg_tryingsdcard:     .byte "LOOKING FOR SDCARD...",0
 msg_foundsdcard:      .byte "FOUND AND RESET SDCARD",0
 msg_sdcarderror:      .byte "ERROR READING FROM SD CARD",0
@@ -2301,39 +2459,41 @@ msg_romfilelongerror: .byte "ROM TOO LONG: (READ $$$$ PAGES)",0
 msg_romfileshorterror:.byte "ROM TOO SHORT: (READ $$$$ PAGES)",0
 msg_clusternumber:    .byte " NEXT CLUSTER=$$$$$$$$",0
 msg_sectoraddress:    .byte " NEXT SECTOR=$$$$$$$$",0
-msg_nod81:	      .byte "CANNOT FIND C65GS.D81 - (ERRNO: $$)",0
-msg_foundd81:	      .byte "MOUNTING C65GS.D81 @ INTERNAL F011 DRIVE",0
-msg_d81wronglength:   .byte "FAIL: C64GS.D81 IS NOT 819200 BYTES LONG",0
-msg_d81fragged:       .byte "FAIL: C65GS.D81 IS FRAGMENTED: DEFRAG IT",0
-msg_d81mounted:	      .byte "C65GS.D81 SUCCESSFULLY MOUNTED",0
+msg_nod81:	      .byte "CANNOT MOUNT MEGA65.D81 - (ERRNO: $$)",0
+msg_d81mounted:	      .byte "MEGA65.D81 SUCCESSFULLY MOUNTED",0
 msg_releasesw15:      .byte "RELEASE SW15 TO CONTINUE BOOTING.",0
-msg_romnotfound:      .byte "COULD NOT FIND ROM C65GSXXXROM",0
-msg_foundkickup:      .byte "LOADING KICKUP.G65 INTO HYPERVISOR",0
-msg_nokickup:         .byte "NO KICKUP.G65 TO LOAD (OR BROKEN)",0
+msg_romnotfound:      .byte "COULD NOT FIND ROM MEGA65XXROM",0
+msg_foundkickup:      .byte "LOADING KICKUP.M65 INTO HYPERVISOR",0
+msg_nokickup:         .byte "NO KICKUP.M65 TO LOAD (OR BROKEN)",0
 msg_kickuploaded:     .byte "KICKUP LOADED TO 00004000 - $$$$$$$$",0
 msg_alreadykicked:    .byte "RUNNING KICKED HYPERVISOR",0
 msg_etherkick:	      .byte "BOOTING VIA ETHERKICK: UDP PORT 4511",0
 msg_lookingfornextsector:
 		      .byte "LOOKING FOR NEXT SECTOR OF FILE",0
-msg_nologo:	      .byte "COULD NOT LOAD BOOTLOGO.G65 (ERRNO:$$)",0
+msg_nologo:	      .byte "COULD NOT LOAD BOOTLOGO.M65 (ERRNO:$$)",0
 msg_cdrootfailed:     .byte "COULD NOT CHDIR TO / (ERRNO:$$)",0
 		      .include "version.a65"
 
 msg_blankline:	      .byte 0
 
 ; filename of character ROM
-txt_c65gscharrom:     .byte "CHARROM.G65",0
+txt_c65gscharrom:     .byte "CHARROM.M65",0
 ; filename of ROM we want to load in FAT directory format
-txt_c65gsrom:	      .byte "C65GS.ROM",0,0
+; (the two zero bytes are so that we can insert an extra digit after
+; the 5, when a user presses a key, so that they can choose a
+; different ROM to load).
+txt_c65gsrom:	      .byte "MEGA65.ROM",0,0
 ; filename of 1581 disk image we mount by default
-txt_c65gsd81:	      .byte "C65GS.D81",0
+txt_c65gsd81:	      .byte "MEGA65.D81",0
 ; filename of kickstart update file
-txt_kickupfile:	      .byte "KICKUP.G65",0
+txt_kickupfile:	      .byte "KICKUP.M65",0
 ; filename containing boot logo
-txt_bootlogo:	      .byte "BOOTLOGO.G65",0
+txt_bootlogo:	      .byte "BOOTLOGO.M65",0
 
 diskchooserstart:
+	; Pre-compiled disk chooser
 	.incbin "diskchooser"
+	;.incbin "diskmenu_c000.bin"
 diskchooserend:
 
 		.checkpc $BB00
@@ -2386,7 +2546,7 @@ dos_opendir_entry:
 ; Current long filename (max 64 bytes)
 dos_dirent_longfilename:
 		.byte "Venezualen casaba melon productio"
-		.byte "n statistics (2012-2015).txt     "
+		.byte "n statistics (2012-2015).txt  "
 		.byte 0
 dos_dirent_longfilename_length:
 		.byte 0
@@ -2470,6 +2630,9 @@ dos_scratch_vector: .word 0,0
 dos_scratch_byte_1: .byte 0
 dos_scratch_byte_2: .byte 0
 
+; Vectors for copying data between hypervisor and user-space
+hypervisor_userspace_copy_vector:    .word 0
+    
 ; general kickstart temporary variables
 zptempv:	    .word 0
 zptempv2:	    .word 0
@@ -2478,6 +2641,15 @@ zptempp2: 	    .word 0
 zptempv32:	    .word 0,0
 zptempv32b:	    .word 0,0
 dos_file_loadaddress: .word 0,0
+
+; Used for checkpoint debug system of hypervisor
+checkpoint_a:	      .byte 0
+checkpoint_x:	      .byte 0
+checkpoint_y:	      .byte 0
+checkpoint_z:	      .byte 0
+checkpoint_p:	      .byte 0
+checkpoint_pcl:	      .byte 0
+checkpoint_pch:	      .byte 0
 
 		.checkpc $C000
 		.advance $C000, $3f

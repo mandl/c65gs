@@ -1,7 +1,6 @@
--- Bitplane processor for the C65GS
 --
 -- Written by
---    Paul Gardner-Stephen <hld@c64.org>  2015
+--    Paul Gardner-Stephen <hld@c64.org>  2014-2015
 --
 -- *  This program is free software; you can redistribute it and/or modify
 -- *  it under the terms of the GNU Lesser General Public License as
@@ -17,9 +16,7 @@
 -- *  along with this program; if not, write to the Free Software
 -- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
 -- *  02111-1307  USA.
-
-use WORK.ALL;
-
+----------------------------------------------------------------------------------
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use ieee.numeric_std.all;
@@ -28,134 +25,101 @@ use work.debugtools.all;
 use work.cputypes.all;
 
 entity bitplanes is
-  port (
-    pixelclock : in std_logic;
+  Port (
+    ----------------------------------------------------------------------
+    -- dot clock
+    ----------------------------------------------------------------------
+    pixelclock : in  STD_LOGIC;
     ioclock : in std_logic;
-    cpuclock : in std_logic;
-    iomode : in std_logic_vector(1 downto 0);
 
-    -- Fastio interface to allow CPU to read and set registers
-    fastio_addr : in unsigned(19 downto 0);
-    fastio_write : in std_logic;
-    fastio_wdata : in unsigned(7 downto 0);
-    fastio_rdata : out std_logic_vector(7 downto 0);
-
-    -- CPU DMA interface to fetch data
-    -- (Set dma_address and dma_count, then raise dma_request_set until
-    -- dma_data_valid is asserted, then clear dma_request_set.
-    -- dma_count_in indicates which byte in the request is being presented.
-    -- dma_data_valid returns low after last byte has been supplied.
-    dma_address : out unsigned(31 downto 0);
-    dma_count : out unsigned(7 downto 0);
-    dma_request_set : out std_logic := '0';
-    dma_data_valid : in std_logic;
-    dma_data_in : in unsigned(7 downto 0);
-    dma_count_in : in unsigned(7 downto 0);
+    signal fastio_address :in unsigned(19 downto 0);
+    signal fastio_write : in std_logic;
+    signal fastio_wdata : in unsigned(7 downto 0);
     
-    -- XXX VIC-IV buffer interface for providing rendered raster lines of
-    -- bitplane data, and for indicating when safe to update raster buffer.
-    bitplanerenderbuffer_address : in unsigned(11 downto 0);
-    bitplanerenderbuffer_rdata : out unsigned(8 downto 0);
-    bitplanerenderbuffer_moby : out std_logic;
-    viciv_flyback : in std_logic;
-    -- and also what our current raster number is
-    viciv_physical_raster : in unsigned(11 downto 0)
-    );
+    -- Pull sprite data in along the chain from the previous sprite (or VIC-IV)
+    signal sprite_datavalid_in : in std_logic;
+    signal sprite_bytenumber_in : in integer range 0 to 15;
+    signal sprite_spritenumber_in : in integer range 0 to 15;
+    signal sprite_data_in : in unsigned(7 downto 0);
+
+    -- Pass sprite data out along the chain to the next sprite
+    signal sprite_datavalid_out : out std_logic;
+    signal sprite_bytenumber_out : out integer range 0 to 79;
+    signal sprite_spritenumber_out : out integer range 0 to 79;
+    signal sprite_data_out : out unsigned(7 downto 0);
+
+    -- which base offset for the VIC-II sprite data are we showing this raster line?
+    -- VIC-IV clocks sprite_number_for_data and each sprite replaces
+    -- sprite_data_offset with the appropriate value if the sprite number is itself
+    signal sprite_number_for_data_in : in integer range 0 to 15;
+    signal sprite_data_offset_in : in integer range 0 to 65535;    
+    signal sprite_data_offset_out : out integer range 0 to 65535;    
+    signal sprite_number_for_data_out : out integer range 0 to 15;
+
+    signal bitplane_h640 : in std_logic;
+    signal bitplane_h1280 : in std_logic;
+    signal bitplane_mode_in : in std_logic;
+    signal bitplane_enables_in : in std_logic_vector(7 downto 0);
+    signal bitplane_complements_in : in std_logic_vector(7 downto 0);
+    signal bitplanes_x_start : in unsigned(7 downto 0);
+    signal bitplanes_y_start : in unsigned(7 downto 0);
+    signal bitplane_sixteen_colour_mode_flags : in std_logic_vector(7 downto 0);
+    
+    -- Is the pixel just passed in a foreground pixel?
+    signal is_foreground_in : in std_logic;
+    signal is_background_in : in std_logic;
+    -- and what is the colour of the bitmap pixel?
+    signal x_in : in integer range 0 to 4095;
+    signal x640_in : in integer range 0 to 4095;
+    signal x1280_in : in integer range 0 to 4095;
+    signal y_in : in integer range 0 to 4095;
+    signal border_in : in std_logic;
+    signal pixel_in : in unsigned(7 downto 0);
+    signal alpha_in : in unsigned(7 downto 0);
+    -- and information from the previous sprite
+    signal is_sprite_in : in std_logic;
+    signal sprite_colour_in : in unsigned(7 downto 0);
+    signal sprite_map_in : in std_logic_vector(7 downto 0);
+    signal sprite_fg_map_in : in std_logic_vector(7 downto 0);
+
+    -- Pass pixel information back out, as well as the sprite colour information
+    signal is_foreground_out : out std_logic;
+    signal is_background_out : out std_logic;
+    signal x_out : out integer range 0 to 4095;
+    signal y_out : out integer range 0 to 4095;
+    signal border_out : out std_logic;
+    signal pixel_out : out unsigned(7 downto 0);
+    signal alpha_out : out unsigned(7 downto 0);
+    signal sprite_colour_out : out unsigned(7 downto 0);
+    signal is_sprite_out : out std_logic;
+    signal sprite_map_out : out std_logic_vector(7 downto 0);
+    signal sprite_fg_map_out : out std_logic_vector(7 downto 0)
+    
+);
+
 end bitplanes;
 
---                        VIC-III MODE REGISTERS
-
---+-------+-------+-------+-------+-------+-------+-------+-------+ D000+
---| KEY7  | KEY6  | KEY5  | KEY4  | KEY3  | KEY2  | KEY1  | KEY0  | 2F KEY
---+-------+-------+-------+-------+-------+-------+-------+-------+
---| ROM   | CROM  | ROM   | ROM   | ROM   | PAL   | EXT   | CRAM  | 30 CONTROL A
---| @E000 | @9000 | @C000 | @A000 | @8000 |       | SYNC  | @DC00 |
---+-------+-------+-------+-------+-------+-------+-------+-------+
---| H640  | FAST  | ATTR  |  BPM  | V400  | H1280 | MONO  |  INT  | 31 CONTROL B
---+-------+-------+-------+-------+-------+-------+-------+-------+
---| BP7EN | BP6EN | BP5EN | BP4EN | BP3EN | BP2EN | BP1EN | BP0EN | 32 BP ENABS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B0AD15 |B0AD14 |B0AD13 |       |B0AD15 |B0AD14 |B0AD13 |       | 33 BITPLANE 0
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B1AD15 |B1AD14 |B1AD13 |       |B1AD15 |B1AD14 |B1AD13 |       | 34 BITPLANE 1
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B2AD15 |B2AD14 |B2AD13 |       |B2AD15 |B2AD14 |B2AD13 |       | 35 BITPLANE 2
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B3AD15 |B3AD14 |B3AD13 |       |B3AD15 |B3AD14 |B3AD13 |       | 36 BITPLANE 3
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B4AD15 |B4AD14 |B4AD13 |       |B4AD15 |B4AD14 |B4AD13 |       | 37 BITPLANE 4
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B5AD15 |B5AD14 |B5AD13 |       |B5AD15 |B5AD14 |B5AD13 |       | 38 BITPLANE 5
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B6AD15 |B6AD14 |B6AD13 |       |B6AD15 |B6AD14 |B6AD13 |       | 39 BITPLANE 6
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B7AD15 |B7AD14 |B7AD13 |       |B7AD15 |B7AD14 |B7AD13 |       | 3A BITPLANE 7
---| ODD   | ODD   | ODD   |       | EVEN  | EVEN  | EVEN  |       |    ADDRESS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|BP7COMP|BP6COMP|BP5COMP|BP4COMP|BP3COMP|BP2COMP|BP1COMP|BP0COMP| 3B BP COMPS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---| BPY8  | BPX6  | BPX5  | BPX4  | BPX3  | BPX2  | BPX1  | BPX0  | 3C BITPLANE X
---+-------+-------+-------+-------+-------+-------+-------+-------+
---| BPY7  | BPY6  | BPY5  | BPY4  | BPY3  | BPY2  | BPY1  | BPY0  | 3D BITPLANE Y
---+-------+-------+-------+-------+-------+-------+-------+-------+
---| HPOS7 | HPOS6 | HPOS5 | HPOS4 | HPOS3 | HPOS2 | HPOS1 | HPOS0 | 3E HORIZ POS
---+-------+-------+-------+-------+-------+-------+-------+-------+
---| VPOS7 | VPOS6 | VPOS5 | VPOS4 | VPOS3 | VPOS2 | VPOS1 | VPOS0 | 3F VERT POS
---+-------+-------+-------+-------+-------+-------+-------+-------+
-
-
---                        DAT MEMORY PORTS
-
---+-------+-------+-------+-------+-------+-------+-------+-------+ D000+
---|B0PIX7 |B0PIX6 |B0PIX5 |B0PIX4 |B0PIX3 |B0PIX2 |B0PIX1 |B0PIX0 | 40 BITPLANE 0
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B1PIX7 |B1PIX6 |B1PIX5 |B1PIX4 |B1PIX3 |B1PIX2 |B1PIX1 |B1PIX0 | 41 BITPLANE 1
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B2PIX7 |B2PIX6 |B2PIX5 |B2PIX4 |B2PIX3 |B2PIX2 |B2PIX1 |B2PIX0 | 42 BITPLANE 2
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B3PIX7 |B3PIX6 |B3PIX5 |B3PIX4 |B3PIX3 |B3PIX2 |B3PIX1 |B3PIX0 | 43 BITPLANE 3
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B4PIX7 |B4PIX6 |B4PIX5 |B4PIX4 |B4PIX3 |B4PIX2 |B4PIX1 |B4PIX0 | 44 BITPLANE 4
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B5PIX7 |B5PIX6 |B5PIX5 |B5PIX4 |B5PIX3 |B5PIX2 |B5PIX1 |B5PIX0 | 45 BITPLANE 5
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B6PIX7 |B6PIX6 |B6PIX5 |B6PIX4 |B6PIX3 |B6PIX2 |B6PIX1 |B6PIX0 | 46 BITPLANE 6
---+-------+-------+-------+-------+-------+-------+-------+-------+
---|B7PIX7 |B7PIX6 |B7PIX5 |B7PIX4 |B7PIX3 |B7PIX2 |B7PIX1 |B7PIX0 | 47 BITPLANE 7
---+-------+-------+-------+-------+-------+-------+-------+-------+
-
-
 architecture behavioural of bitplanes is
-  -- C65 compatibility bitplanes : addresses are multiples of 8KB (or 16KB in H640)
-  type viciii_bitplane_addresses is array (0 to 7) of unsigned(2 downto 0);
-  signal bitplane_addresses_even : viciii_bitplane_addresses;
-  signal bitplane_addresses_odd : viciii_bitplane_addresses;
-  signal reg_bitplane_enables : std_logic_vector(7 downto 0);
-  signal reg_bitplane_complements : std_logic_vector(7 downto 0);
-  signal reg_bitplane_x : unsigned(7 downto 0);
-  signal reg_bitplane_y : unsigned(7 downto 0);
-  signal bitplane_mode : std_logic := '0';
-  
-  -- C65GS new bitplanes : arbitrary addresses
-  type viciv_bitplane_addresses is array(0 to 15) of unsigned(31 downto 0);
-  signal viciv_bitplane_addrs : viciv_bitplane_addresses;
 
-  signal bitplanedatabuffer_write : std_logic := '0';
-  signal bitplanedatabuffer_wdata : unsigned(8 downto 0);
-  signal bitplanedatabuffer_waddress : unsigned(11 downto 0);
-  signal bitplanedatabuffer_address : unsigned(11 downto 0);
-  signal bitplanedatabuffer_rdata : unsigned(8 downto 0);
+  component bitplane is
+  Port (
+    ----------------------------------------------------------------------
+    -- dot clock
+    ----------------------------------------------------------------------
+    pixelclock : in  STD_LOGIC;
 
-  signal bitplanerenderbuffer_write : std_logic := '0';
-  signal bitplanerenderbuffer_wdata : unsigned(8 downto 0);
-  signal bitplanerenderbuffer_waddress : unsigned(11 downto 0);
+    advance_pixel : in std_logic;
+    sixteen_colour_mode : in std_logic;
+
+    data_in_valid : in std_logic;
+    data_in : in unsigned(7 downto 0);
+    data_request : out std_logic := '0';
+    
+    pixel_out : out std_logic := '0';
+    pixel16_out : out unsigned(3 downto 0) := x"0"
+    );
+
+  end component;
 
   
   component ram9x4k IS
@@ -170,11 +134,52 @@ architecture behavioural of bitplanes is
       );
   END component;
 
-begin
+  signal y_last : integer range 0 to 4095;
+  signal x_last : integer range 0 to 4095;
+  signal x_left : std_logic := '0';
+  signal y_top : std_logic := '0';
+  signal x_in_bitplanes : std_logic := '0';
+  signal bitplane_drawing : std_logic := '0';
+  signal bitplane_x_start : integer range 0 to 4095 := 30;
+  signal bitplane_y_start : integer range 0 to 4095 := 30;
+  signal bitplanes_answer_data_request_timeout : integer range 0 to 255 := 0;
 
-  -- 4K buffer for holding buffered bitplane data for rendering
+  signal bitplane_mode : std_logic;
+  signal bitplane_enables : std_logic_vector(7 downto 0);
+  signal bitplane_complements : std_logic_vector(7 downto 0);
+
+  type bdo is array(0 to 7) of integer range 0 to 65535;
+  signal bitplane_data_offsets : bdo;
+
+  signal bitplanedatabuffer_write : std_logic := '0';
+  signal bitplanedatabuffer_wdata : unsigned(8 downto 0);
+  signal bitplanedatabuffer_waddress : unsigned(11 downto 0);
+  signal bitplanedatabuffer_rdata : unsigned(8 downto 0);
+  signal bitplanedatabuffer_address : unsigned(11 downto 0);
+
+  -- Signals into and out of bitplane pixel engines
+  signal bitplanes_advance_pixel : std_logic_vector(7 downto 0) := "00000000";
+  signal bitplanes_sixteen_colour_mode : std_logic_vector(7 downto 0) := "00000000";
+  signal bitplanes_data_in_valid : std_logic_vector(7 downto 0) := "00000000";
+  signal bitplanes_data_in : unsigned(7 downto 0) := x"00";
+  signal bitplanes_data_request : std_logic_vector(7 downto 0);
+  signal bitplanes_pixel_out : std_logic_vector(7 downto 0);
+  type nybl_array_8 is array(0 to 7) of unsigned(3 downto 0);
+  signal bitplanes_pixel16_out : nybl_array_8;
+  type bitplane_offsets_8 is array(0 to 7) of integer range 0 to 511;
+  signal bitplanes_byte_numbers : bitplane_offsets_8;
+
+  signal bitplanedata_fetching : std_logic := '0';
+  signal bitplanedata_fetch_bitplane : integer range 0 to 7;
+  
+begin  -- behavioural
+
+  -- 4K buffer for holding buffered bitplane data for rendering.
+  -- 8 bitplanes x 512 bytes = 4KB.
+  -- This is plenty, since we actually only read 80 bytes max per bitplane per
+  -- line (actually upto 320 bytes per line when using bitplanes in 16-colour mode)
   bitplanedatabuffer: component ram9x4k
-    port map (clka => cpuclock,
+    port map (clka => pixelclock,
               wea(0) => bitplanedatabuffer_write,
               dina => std_logic_vector(bitplanedatabuffer_wdata),
               addraa => std_logic_vector(bitplanedatabuffer_waddress),
@@ -184,85 +189,217 @@ begin
               unsigned(doutb) => bitplanedatabuffer_rdata
               );
 
-  -- 4KB buffer for holding 2 raster lines worth of output:
-  -- last drawn buffer for the VIC-IV to render from, and one that we
-  -- are rendering to.  We then use hsync to know when it is safe to toggle
-  -- between them, and avoid horizontal tearing
-  bitplanerenderbuffer: component ram9x4k
-    port map (clka => pixelclock,
-              wea(0) => bitplanerenderbuffer_write,
-              dina => std_logic_vector(bitplanerenderbuffer_wdata),
-              addraa => std_logic_vector(bitplanerenderbuffer_waddress),
-
-              clkb => pixelclock,
-              addrb => std_logic_vector(bitplanerenderbuffer_address),
-              unsigned(doutb) => bitplanerenderbuffer_rdata
-              );
+  generate_bitplanes:  
+  for index in 0 to 7 generate  
+    begin  
+      bitplane_inst : bitplane
+      port map (  
+        pixelclock => pixelclock,
+        advance_pixel => bitplanes_advance_pixel(index),
+        sixteen_colour_mode => bitplanes_sixteen_colour_mode(index),
+        data_in_valid => bitplanes_data_in_valid(index),
+        data_in => bitplanes_data_in,
+        data_request => bitplanes_data_request(index),
+        pixel_out => bitplanes_pixel_out(index),
+        pixel16_out => bitplanes_pixel16_out(index)
+      );  
+  end generate;  
   
-  process (ioclock) is
-    variable register_number : unsigned(7 downto 0);
-    variable bitplane_number : integer;
-  begin
-    if rising_edge(ioclock) then
-      fastio_rdata <= (others => 'Z');
-      if fastio_addr(19 downto 8) = x"d10"
-        or fastio_addr(19 downto 8) = x"d30" then
-        -- Bitplane registers appear only in VIC-III/IV IO map
-        register_number := fastio_addr(7 downto 0);
-        if register_number = 49 then
-          -- Sniff when someone enables or disables VIC-III bitplane mode, so that
-          -- we know when to stop/start fetching them.
-          if fastio_write='1' then
-            bitplane_mode <= fastio_wdata(4);
-          end if;
-        elsif register_number = 50 then
-          -- @ IO:65 $D032 - VIC-III Bitplane enable bits
-          if fastio_write='1' then
-            reg_bitplane_enables(7 downto 0) <= std_logic_vector(fastio_wdata);
-          else
-            fastio_rdata <= reg_bitplane_enables(7 downto 0);
-          end if;
-        elsif register_number >= 51 and register_number <= 58 then
-          -- @ IO:65 $D033-$D03A - VIC-III Bitplane addresses
-          bitplane_number := to_integer(register_number(3 downto 0)-"001");
-          if fastio_write='1' then
-            bitplane_addresses_even(bitplane_number) <= fastio_wdata(7 downto 5);
-            bitplane_addresses_odd(bitplane_number) <= fastio_wdata(3 downto 1);
-          else
-            fastio_rdata(7 downto 5) <= std_logic_vector(bitplane_addresses_even(bitplane_number));
-            fastio_rdata(4) <= '0';
-            fastio_rdata(3 downto 1) <= std_logic_vector(bitplane_addresses_odd(bitplane_number));
-            fastio_rdata(0) <= '0';
-          end if;
-        elsif register_number = 59 then
-          -- @ IO:65 $D03B - VIC-III Bitplane complement bits
-          if fastio_write='1' then
-            reg_bitplane_complements(7 downto 0) <= std_logic_vector(fastio_wdata);
-          else
-            fastio_rdata <= reg_bitplane_complements(7 downto 0);
-          end if;
-        elsif register_number = 60 then
-          -- @ IO:65 $D03C - VIC-III Bitplane X (for DAT)
-          if fastio_write='1' then
-            reg_bitplane_x(7 downto 0) <= fastio_wdata;
-          else
-            fastio_rdata <= std_logic_vector(reg_bitplane_x(7 downto 0));
-          end if;
-        elsif register_number = 61 then
-          -- @ IO:65 $D03D - VIC-III Bitplane Y (for DAT)
-          if fastio_write='1' then
-            reg_bitplane_y(7 downto 0) <= fastio_wdata;
-          else
-            fastio_rdata <= std_logic_vector(reg_bitplane_y(7 downto 0));
-          end if;
-        end if;
+  -- purpose: bitplane drawing
+  -- type   : sequential
+  -- inputs : pixelclock, <reset>
+  -- outputs: colour, is_sprite_out
+  main: process (pixelclock)
+  begin  -- process main
+    if ioclock'event and ioclock = '1' then
+      -- Allow writing to bitplane buffer memory directly for debugging
+      -- (will be overridden if VIC-IV data pipeline is feeding us data)
+      -- @IO:GS $FFBF000 - $FFBFFFF - DEBUG allow writing directly to the bitplane data buffer.  Will be removed in production.
+      if fastio_write='1' and fastio_address(19 downto 12) = x"BF" then
+        bitplanedatabuffer_waddress(11 downto 0)
+          <= fastio_address(11 downto 0);
+        bitplanedatabuffer_wdata(8) <= '0';
+        bitplanedatabuffer_wdata(7 downto 0) <= fastio_wdata;
+        bitplanedatabuffer_write <= '1';
       end if;
     end if;
+    if pixelclock'event and pixelclock = '1' then  -- rising clock edge
 
-    -- On CPU clock, manage DMA requests
+      -- Copy sprite colission status out
+      sprite_map_out <= sprite_map_in;
+      sprite_fg_map_out <= sprite_fg_map_in;
+      
+      -- Have a drive stage on bitplane mode bits to ease timing.
+      bitplane_mode <= bitplane_mode_in;      
+      bitplane_enables <= bitplane_enables_in;
+      bitplane_complements <= bitplane_complements_in;
+      
+      -- copy sprite data chain from input side to output side      
+      sprite_spritenumber_out <= sprite_spritenumber_in;
+      sprite_datavalid_out <= sprite_datavalid_in;
+      sprite_bytenumber_out <= sprite_bytenumber_in;
+      sprite_data_out <= sprite_data_in;
+      sprite_number_for_data_out <= sprite_number_for_data_in;
+      
+      if sprite_datavalid_in = '1' and (sprite_spritenumber_in > 7) then
+        -- Record sprite data
+        report "BITPLANES:"
+          & "  byte $" & to_hstring(sprite_data_in)
+          & " from VIC-IV for bp#"
+          & integer'image(sprite_spritenumber_in)
+          & " byte #" & integer'image(sprite_bytenumber_in)
+          & " x=" & integer'image(x_in)
+          & " x_start=" & integer'image(bitplane_x_start)
+          & " y=" & integer'image(y_in)
+          & " y_start=" & integer'image(bitplane_y_start)
+          & " border_in=" & std_logic'image(border_in)
+          & " bitplane_mode_in=" & std_logic'image(bitplane_mode_in)
+          & " bitplane_drawing=" & std_logic'image(bitplane_drawing);
+        bitplanedatabuffer_waddress(11 downto 9)
+          <= to_unsigned(sprite_spritenumber_in mod 8, 3);
+        bitplanedatabuffer_waddress(8 downto 0)
+          <= to_unsigned(sprite_bytenumber_in, 9);
+        bitplanedatabuffer_wdata(8) <= '0';
+        bitplanedatabuffer_wdata(7 downto 0) <= sprite_data_in;
+        bitplanedatabuffer_write <= '1';
+      end if;      
+      
+      if sprite_number_for_data_in > 7 then
+        -- Tell VIC-IV our current bitplane data offsets
+        sprite_data_offset_out <= bitplane_data_offsets(sprite_number_for_data_in mod 8);
+      else
+        sprite_data_offset_out <= sprite_data_offset_in;
+      end if;
 
-    -- On VIC-IV pixel clock, render bitplanes
-    
-    
-  end process;
+      -- copy pixel data chain from input side to output side
+      alpha_out <= alpha_in;
+      x_out <= x_in;
+      y_out <= y_in;
+      border_out <= border_in;
+      is_foreground_out <= is_foreground_in;
+      is_background_out <= is_background_in;
+
+      -- Work out if we need to fetch a byte
+      bitplanedata_fetching <= '0';
+      if bitplanes_answer_data_request_timeout = 0 then        
+        for i in 7 downto 0 loop
+          if bitplanes_data_request(i) = '1' then
+            bitplanedatabuffer_address(11 downto 9) <= to_unsigned(i,3);
+            bitplanedatabuffer_address(8 downto 0)
+              <= to_unsigned(bitplanes_byte_numbers(i),9);
+            bitplanedata_fetch_bitplane <= i;
+            if bitplanes_byte_numbers(i) < 511 then
+              bitplanes_byte_numbers(i) <= bitplanes_byte_numbers(i) + 1;
+            else
+              bitplanes_byte_numbers(i) <= 0;
+            end if;
+            -- Only fetch the byte if we have not reached the end of the bitplane
+            if bitplanes_byte_numbers(i) < 320 then
+              bitplanedata_fetching <= '1';
+            end if;
+          end if;
+        end loop;
+      else
+        -- Reduce timeout before we honour bitplane fetch requests
+        bitplanes_answer_data_request_timeout
+          <= bitplanes_answer_data_request_timeout - 1;
+      end if;
+      
+      -- Pass fetched data to bitplanes if data is available
+      bitplanes_data_in_valid <= "00000000";
+      if bitplanedata_fetching = '1' then
+        bitplanes_data_in <= bitplanedatabuffer_rdata(7 downto 0);
+        bitplanes_data_in_valid(bitplanedata_fetch_bitplane) <= '1';
+      end if;
+      
+      -- Work out when we start drawing the bitplane
+      y_last <= y_in;
+      if y_last = bitplane_y_start then
+        y_top <= '1';
+        report "asserting y_top";
+        -- Start requesting pixels from bitplanes to empty their buffers.
+        bitplanes_advance_pixel <= "11111111";
+        -- Allow enough cycles to flush the buffers in single-colour (C65) bitplane mode
+        bitplanes_answer_data_request_timeout <= 64;
+      else
+        y_top <= '0';
+      end if;
+
+      bitplanes_advance_pixel <= "00000000";
+      -- XXX: Bitplane output is delayed by one physical pixel here.
+      -- This means that the bitplanes needs to be fed the x value one pixel clock
+      -- early, or bitplanes will be offset by one physical pixel.
+      -- Also, we need to have a 640 and 1280 pixel clock to do
+      -- higher-resolution bitplanes for full C65 compatibility.
+      -- None of the above has yet been done.
+      if x_in = bitplane_x_start
+        and (y_top='1' or bitplane_drawing='1') then
+        x_left <= '1';
+        x_in_bitplanes <= '1';
+        report "asserting x_left and x_in_bitplanes";
+      else
+        x_left <= '0';
+      end if;
+      -- Clear bitplane byte numbers at the start of each raster.
+      if x_in = 0 then
+        for i in 7 downto 0 loop
+          bitplanes_byte_numbers(i) <= 0; 
+        end loop;
+      end if;
+
+      -- Start drawing once we hit the top of the bitplanes.
+      -- Note: the logic here means that bitplanes must be enabled at this
+      -- point, or they will not be shown at all on the frame!
+      if (y_top = '1') and (bitplane_mode_in = '1') then
+        bitplane_drawing <= '1';
+        report "bitplane_drawing asserted.";
+      end if;
+      -- Always stop drawing bitplanes at raster 255 (just a little into the
+      -- lower border).
+      if y_in = 255 then
+        bitplane_drawing <= '0';
+        report "bitplane_drawing cleared.";
+      end if;
+        
+      if (x_in /= x_last) and (bitplane_drawing='1') then
+        -- Request first or next pixel from each bitplane.
+        -- We now fetch enough bytes for 16-colour bitplanes to be at full resolution.
+        bitplanes_advance_pixel <= "11111111";
+      end if;              
+
+      pixel_out <= pixel_in;
+      if (bitplane_mode='1') and (border_in='0') and (bitplane_drawing='1') then
+        -- Display bitplanes, and set foreground based on bitplane 2
+        -- (but not for 16-colour bitplanes)
+        report "bitplane pixel";
+        for i in 0 to 7 loop
+          if bitplane_enables(i)='1' then
+            if bitplanes_sixteen_colour_mode(i)='0' then
+              report "bitplanes_pixel_out(" & integer'image(i) & ") = " &
+                std_logic'image(bitplanes_pixel_out(i));
+              pixel_out(i) <= bitplanes_pixel_out(i) xor bitplane_complements(i);
+              if i = 2 then
+                is_foreground_out <= bitplanes_pixel_out(i) xor bitplane_complements(i);
+              end if;
+            else
+              -- 16 colour bitplane mode modifies four bits of the colour,
+              -- depending on which bitplane it is.
+              if bitplanes_pixel16_out(i) /= x"0" then                
+                pixel_out((3+(i mod 4)) downto (i mod 4)) <= bitplanes_pixel16_out(i);
+              end if;
+            end if;
+          else
+            pixel_out(i) <= bitplane_complements(i);
+            if i = 2 then
+              is_foreground_out <= bitplane_complements(i);
+            end if;
+          end if;
+        end loop;
+      end if;
+      
+      is_sprite_out <= is_sprite_in;
+      sprite_colour_out <= sprite_colour_in;
+    end if;
+  end process main;
+
 end behavioural;

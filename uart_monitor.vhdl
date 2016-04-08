@@ -67,6 +67,9 @@ entity uart_monitor is
     monitor_map_enables_high : in std_logic_vector(3 downto 0);
     monitor_interrupt_inhibit : in std_logic;
 
+    monitor_char : in unsigned(7 downto 0);
+    monitor_char_toggle : in std_logic;
+
     monitor_mem_address : out unsigned(27 downto 0);
     monitor_mem_rdata : in unsigned(7 downto 0);
     monitor_mem_wdata : out unsigned(7 downto 0);
@@ -109,6 +112,9 @@ architecture behavioural of uart_monitor is
     );
   END component;
 
+  signal monitor_char_toggle_last : std_logic := '1';
+  signal monitor_char_count : unsigned(15 downto 0) := x"0000";
+  
   signal history_record : std_logic := '1';
   signal history_record_continuous : std_logic := '0';
   signal history_address : integer range 0 to 1023 := 0;
@@ -143,7 +149,7 @@ architecture behavioural of uart_monitor is
     crlf &
     crlf &
     "--------------------------------" & crlf &
-    "65GS Serial Monitor" & crlf &
+    "MEGA65 Serial Monitor" & crlf &
     "build " & gitcommit & crlf &
     "--------------------------------" & crlf &
     "Type ? for help." & crlf;
@@ -776,7 +782,16 @@ begin
           when PrintPrompt => cmdlen <= 1; try_output_char('.',AcceptingInput);
           when AcceptingInput =>
             -- If there is a character waiting
-            if rx_ready = '1' and rx_acknowledge='0' then
+            if monitor_char_toggle /= monitor_char_toggle_last then
+              monitor_char_toggle_last <= monitor_char_toggle;
+              try_output_char(character'val(to_integer(monitor_char)),
+                              AcceptingInput);
+              if monitor_char_count < 65535 then
+                monitor_char_count <= monitor_char_count + 1;
+              else
+                monitor_char_count <= x"0000";
+              end if;
+            elsif rx_ready = '1' and rx_acknowledge='0' then
               blink <= not blink;
               activity <= blink;
               rx_acknowledge<='1';
@@ -823,6 +838,8 @@ begin
               if (cmdbuffer(1) = 'h' or cmdbuffer(1) = 'H' or cmdbuffer(1) = '?') then
                 banner_position <= 1;
                 state <= PrintHelp;
+              elsif cmdbuffer(1) = 'c' or cmdbuffer(1) = 'C' then
+                print_hex("000000"&monitor_char_toggle&monitor_char_toggle_last&monitor_char&monitor_char_count,7,NextCommand);
               elsif cmdbuffer(1) = 's' or cmdbuffer(1) = 'S' then
                 parse_position <= 2;
                 parse_hex(SetMemory1);
